@@ -1,0 +1,49 @@
+<div id="app">
+  <header class="bar">
+    <div class="brand-wrap">
+      <span class="brand" aria-hidden="true"><i></i><span class="bt">Tapehouse</span></span>
+      <input id="projName" class="proj-name" type="text" aria-label="Project name" maxlength="80">
+      <span id="saveState" class="save-state">Loading…</span>
+    </div>
+    <div class="console" role="group" aria-label="Transport">
+      <div class="deck">
+        <button id="playBtn" class="tbtn play" aria-label="Play (Space)"></button>
+        <button id="stopBtn" class="tbtn" aria-label="Stop and go back to the start"></button>
+        <button id="recBtn" class="tbtn rec" aria-label="Record (R)" aria-pressed="false"><i aria-hidden="true"></i><span class="rl">Record</span></button>
+        <button id="metroBtn" class="tbtn metro" aria-label="Metronome (M)" title="Metronome (M)" aria-pressed="false"></button>
+        <div class="seg" id="modeSeg" role="group" aria-label="Play mode">
+          <button data-mode="pattern" aria-pressed="true" title="Loop the current pattern">Pattern</button>
+          <button data-mode="song" aria-pressed="false" title="Play the whole arrangement">Song</button>
+        </div>
+      </div>
+      <div class="screen">
+        <label class="cell"><span class="k">BPM</span><input id="bpm" type="number" min="40" max="240" step="1" inputmode="numeric"></label>
+        <div class="cell keybox"><span class="k">Key</span><select id="keyRoot" aria-label="Key"></select><select id="keyScale" aria-label="Scale"></select></div>
+        <div class="cell pos-cell"><span class="k">Pos</span><span id="timeDisp" class="time">1.1.1</span></div>
+        <canvas id="scope" aria-hidden="true"></canvas>
+      </div>
+      <div class="swing" id="swingHost"><span>Swing</span></div>
+      <div class="master-meter" title="Master level"><i id="masterFill"></i></div>
+    </div>
+    <div class="bar-right">
+      <select id="patSelect" aria-label="Current pattern"></select>
+      <button id="undoBtn" class="btn icon" aria-label="Undo"></button>
+      <button id="redoBtn" class="btn icon" aria-label="Redo"></button>
+      <button id="searchBtn" class="btn icon" aria-label="Find any action (Ctrl K)" title="Find any action (Ctrl K)"></button>
+      <button id="colorsBtn" class="btn icon" aria-label="Colors" title="Colors"><span class="dots" id="themeDots"><i></i><i></i><i></i></span></button>
+      <button id="tipsBtn" class="btn icon tips" aria-label="Show tips" aria-pressed="true" title="Show or hide tips">?</button>
+      <button id="importBtn" class="btn lb-btn" aria-label="Import files"><span class="lb">Import</span></button>
+      <button id="projBtn" class="btn lb-btn" aria-label="Project, export and saved projects"><span class="lb">Project</span></button>
+    </div>
+  </header>
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Studio views"></nav>
+  <main>
+    <aside id="libRail" aria-label="Library"></aside>
+    <section id="view" aria-live="off"></section>
+  </main>
+</div>
+<input type="file" id="fileInput" multiple hidden>
+<datalist id="folderList"></datalist>
+<div id="sheet" class="sheet" hidden><div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheetTitle"></div></div>
+<div id="toasts" aria-live="polite"></div>
+<div id="dropOverlay" hidden>Drop to import into your library</div>
