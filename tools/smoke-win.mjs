@@ -76,7 +76,14 @@ async function captureFailure() {
 }
 
 async function stop(code, message) {
-  if (message) console.error(`\nsmoke: ${message}`);
+  if (message) {
+    console.error(`\nsmoke: ${message}`);
+    // Actions turns this into an annotation, which stays readable without the job log.
+    if (process.env.GITHUB_ACTIONS) {
+      const oneLine = message.replace(/%/g, '%25').replace(/\r?\n/g, ' | ');
+      console.log(`::error title=smoke::${oneLine}`);
+    }
+  }
   if (code !== 0) await captureFailure();
   if (app.exitCode === null && app.signalCode === null) {
     if (process.platform === 'win32') {

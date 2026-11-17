@@ -36,9 +36,7 @@
       {
         "ext": "tapehouse",
         "name": "Tapehouse project",
-        "description": "Tapehouse project bundle",
-        "icon": "build/icon.ico",
-        "role": "Editor"
+        "description": "Tapehouse project bundle"
       }
     ],
     "win": {

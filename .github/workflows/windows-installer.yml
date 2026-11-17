@@ -3,6 +3,7 @@ name: Windows installer
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['v*']
 
 jobs:
@@ -31,6 +32,14 @@ jobs:
       - run: npm ci
       - run: npm run pack:win
       - run: node tools/smoke-win.mjs
+      - name: say what broke
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path smoke-failure.txt) {
+            $report = (Get-Content smoke-failure.txt) -join ' | '
+            echo "::error title=smoke::$($report -replace '%','%25')"
+          }
       - name: keep the failure screenshot
         if: failure()
         uses: actions/upload-artifact@v4
@@ -52,7 +61,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run installer
+      - name: build the installer
+        shell: pwsh
+        run: |
+          npm run installer 2>&1 | Tee-Object -FilePath installer.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: say what broke
+        if: failure()
+        shell: pwsh
+        run: |
+          $tail = (Get-Content installer.log -Tail 30 -ErrorAction SilentlyContinue) -join ' | '
+          if ($tail) { echo "::error title=installer::$($tail -replace '%','%25')" }
       - uses: actions/upload-artifact@v4
         with:
           name: Tapehouse-Setup
