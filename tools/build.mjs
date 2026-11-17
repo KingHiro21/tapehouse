@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /* Assembles src/ into dist/, the same output build.sh produces, without needing bash.
-   dist/tapehouse.html  — the page for claude.ai (mic does not work in a preview)
-   dist/Tapehouse.html  — the standalone edition (mic works); this is what the Windows app loads
+   dist/tapehouse-preview.html  — the page for claude.ai (mic does not work in a preview)
+   dist/Tapehouse.html         — the standalone edition (mic works); this is what the Windows app loads
+   The two names must differ by more than case: Windows cannot hold both files, and
+   the one the shell loads would silently vanish from the package.
    Fonts come from src/fonts and are inlined, so the page needs no network. */
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -53,6 +55,6 @@ const page = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta n
   + '</body></html>\n';
 
 await mkdir(path.join(root, 'dist'), { recursive: true });
-await writeFile(path.join(root, 'dist', 'tapehouse.html'), fragment);
+await writeFile(path.join(root, 'dist', 'tapehouse-preview.html'), fragment);
 await writeFile(path.join(root, 'dist', 'Tapehouse.html'), page);
-console.log(`built dist/tapehouse.html and dist/Tapehouse.html (${fontBytes.size} fonts inlined)`);
+console.log(`built dist/tapehouse-preview.html and dist/Tapehouse.html (${fontBytes.size} fonts inlined)`);

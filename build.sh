@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Tapehouse from src/ into dist/: tapehouse.html (for claude.ai) and Tapehouse.html (open as a file; mic works there).
+# Builds Tapehouse from src/ into dist/: tapehouse-preview.html (for claude.ai) and Tapehouse.html (open as a file; mic works there).
 # The actual assembly lives in tools/build.mjs so Windows can build without bash.
 set -e
 cd "$(dirname "$0")"

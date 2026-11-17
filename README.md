@@ -4,8 +4,12 @@ A browser DAW: FL Studio–style editing with AI song generation, built to be ea
 
 - `src/` — the app, split into files (engine, vocal, app, plus, studio, listen, suite, create) plus `style.css` and `body.html`.
 - `build.sh` — assembles `src/` into `dist/`.
-  - `dist/tapehouse.html` — the page for claude.ai (the mic does not work inside a preview).
+  - `dist/tapehouse-preview.html` — the page for claude.ai (the mic does not work inside a preview).
   - `dist/Tapehouse.html` — the recording edition: open it in Chrome or Edge to record with your mic.
+
+  These two names differ by more than case on purpose: Windows cannot store
+  `tapehouse.html` and `Tapehouse.html` side by side, and the missing file used to
+  drop out of the Windows package.
 
 Build:
 

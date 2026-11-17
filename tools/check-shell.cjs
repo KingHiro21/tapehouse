@@ -91,6 +91,10 @@ async function run() {
       !/fonts\.googleapis|fonts\.gstatic/.test(built) && built.includes('id="th-fonts"') && built.includes('data:font/woff2'),
       'the built page still references a font host');
     check('the page accepts projects from the shell', built.includes('onOpenProject'));
+    // Windows cannot hold two names that differ only in case, so a packaged copy
+    // would lose whichever of them it did not keep.
+    const names = fs.readdirSync(path.join(__dirname, '..', 'dist')).map(name => name.toLowerCase());
+    check('dist has no names differing only by case', new Set(names).size === names.length, names.join(', '));
 
     check('/ serves Tapehouse.html', (await serve(new Request('app://tapehouse/'))).status === 200);
     check('missing file is 404', (await serve(new Request('app://tapehouse/nope.css'))).status === 404);
