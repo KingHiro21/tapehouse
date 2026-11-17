@@ -37,3 +37,20 @@ Windows Save dialog. Your projects, samples and plugins live in the app's own pr
 
 The icon is drawn by `tools/make-icon.py` (needs Pillow) into `build/icon.png` and
 `build/icon.ico`, which `npm run pack:win` embeds in `Tapehouse.exe`.
+
+## Checking the desktop wrapper
+
+Run the wrapper without packaging with `npm start` (builds `dist/`, then opens the window)
+or `npx electron .` after a build.
+
+`npm run check:shell` loads `electron/main.js` in plain Node against a stub Electron
+(`tools/stub-electron.js`), so it needs no display and no Electron binary. It asserts:
+
+- `app://` registration and serving — `Tapehouse.html`, `/` → `Tapehouse.html`, and 404s
+  for missing files, path traversal and foreign hosts.
+- Permissions: mic and clipboard write only for the app origin, everything else denied.
+- The View/Help menu, the 1100×640 minimum, sandboxed `webPreferences`, show-on-ready,
+  external links going to the browser, and About reporting the packaged version.
+
+It reads `dist/`, so build first: `npm run check` does both. The Windows workflow runs it
+before building the installer.
