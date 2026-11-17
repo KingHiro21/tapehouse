@@ -1,0 +1,45 @@
+{
+  "name": "tapehouse",
+  "productName": "Tapehouse",
+  "version": "2.2.0",
+  "private": true,
+  "description": "Tapehouse — a music studio in a window: FL Studio-style editing with AI song generation.",
+  "author": {
+    "name": "Tapehouse"
+  },
+  "main": "electron/main.js",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "start": "npm run build && electron .",
+    "pack:win": "npm run build && node tools/pack-win.mjs",
+    "installer": "npm run build && electron-builder --win nsis --x64",
+    "check:shell": "node tools/check-shell.cjs",
+    "check": "npm run build && npm run check:shell"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "studio.tapehouse.app",
+    "productName": "Tapehouse",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "dist/Tapehouse.html",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Tapehouse-Setup-${version}.${ext}"
+    }
+  }
+}

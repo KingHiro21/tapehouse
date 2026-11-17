@@ -1,0 +1,37 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  check-shell:
+    name: validate desktop wrapper
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  installer:
+    name: build NSIS installer
+    runs-on: windows-latest
+    needs: check-shell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tapehouse-Setup
+          path: release/Tapehouse-Setup-*.exe
+          if-no-files-found: error
