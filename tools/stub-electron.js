@@ -32,12 +32,17 @@ class FakeWebContents {
     this.navigateHandler = null;
     this.sent = [];
     this.destroyed = false;
+    this.handlers = {};
   }
   isDestroyed() { return this.destroyed; }
   send(channel, payload) { this.sent.push({ channel, payload }); }
   setWindowOpenHandler(fn) { this.windowOpenHandler = fn; }
   on(event, fn) {
+    (this.handlers[event] ||= []).push(fn);
     if (event === 'will-navigate') this.navigateHandler = fn;
+  }
+  fire(event, ...args) {
+    for (const fn of this.handlers[event] || []) fn(...args);
   }
 }
 

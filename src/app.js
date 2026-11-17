@@ -1518,7 +1518,7 @@ async function importFiles(files) {
     try {
       if (AUDIO_EXT.includes(ext) || (f.type || '').startsWith('audio/')) { busy.set(`Importing ${k} of ${files.length}: ${f.name}`); res.audio.push(await importAudioBytes(f.name, await f.arrayBuffer(), { folder })); }
       else if (ext === 'mid' || ext === 'midi') { await importMidi(f.name, await f.arrayBuffer()); res.midi++; }
-      else if (ext === 'zip') { await importZip(f.name, await f.arrayBuffer(), res, (i, n) => busy.set(`Unpacking ${f.name}: ${i} of ${n}`)); }
+      else if (ext === 'zip' || ext === 'tapehouse') { await importZip(f.name, await f.arrayBuffer(), res, (i, n) => busy.set(`Unpacking ${f.name}: ${i} of ${n}`)); }
       else if (ext === 'json') {
         const txt = await f.text(); let obj;
         try { obj = JSON.parse(txt); } catch (e) { throw new Error(`${f.name} isn’t valid JSON.`); }
@@ -1634,7 +1634,7 @@ async function exportBundle() {
       files.push({ name: file, data: utf8(p.source || JSON.stringify(pluginTemplate(p.manifest), null, 2)) }); pls.push({ id, file });
     }
     files.unshift({ name: 'tapehouse-project.json', data: utf8(JSON.stringify({ format: 'tapehouse-bundle', version: 1, project: P, samples, plugins: pls })) });
-    await saveFile(safeFile(P.name) + '.zip', makeZip(files));
+    await saveFile(safeFile(P.name) + '.tapehouse', makeZip(files));
   } catch (e) { toast(`Couldn’t pack the project: ${e.message}`, { kind: 'error' }); }
 }
 async function backupLibrary() {
@@ -1789,6 +1789,11 @@ function bindChrome() {
   $('#importBtn').addEventListener('click', () => pickFiles());
   $('#projBtn').addEventListener('click', openProjectSheet);
   $('#fileInput').addEventListener('change', e => { const files = [...e.target.files]; if (files.length) importFiles(files); });
+  // A project double-clicked in Explorer (or dropped on Tapehouse.exe) reaches us
+  // from the shell; hand it to the same importer that handles a dropped file.
+  if (window.tapehouse && window.tapehouse.onOpenProject) {
+    window.tapehouse.onOpenProject(({ name, bytes }) => importFiles([new File([bytes], name)]));
+  }
   $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
   const unlock = () => { if (!ctx || ctx.state !== 'running' || !unlockTried) ensureCtx(); };
   ['pointerdown', 'click', 'keydown', 'touchend'].forEach(t => document.addEventListener(t, unlock, { capture: true, passive: true }));

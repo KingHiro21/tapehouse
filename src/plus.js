@@ -604,7 +604,7 @@ function buildCommands() {
   add('Key', `Change key (now ${keyLabel(project)})`, () => $('#keyRoot').focus(), 'scale');
   add('File', 'Import files', () => pickFiles(), 'audio midi zip samples');
   add('File', 'Export song to WAV', () => openProjectSheet({ exportSong: true }), 'mixdown render bounce');
-  add('File', 'Save project bundle', exportBundle, 'zip share');
+  add('File', 'Save project bundle', exportBundle, 'tapehouse project share');
   add('File', 'Back up my library', backupLibrary, 'sounds zip');
   add('File', 'New blank project', () => openProjectObject(blankProject()));
   add('File', 'Open or manage projects', openProjectSheet);

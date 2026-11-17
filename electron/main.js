@@ -7,6 +7,7 @@ const { app, BrowserWindow, Menu, dialog, protocol, session, shell } = require('
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { portableDataDir } = require('./profile');
+const { projectPathFrom } = require('./open-file');
 
 const WEB_DIR = path.join(__dirname, '..', 'dist');
 const APP_ORIGIN = 'app://tapehouse';
@@ -32,9 +33,12 @@ const TYPES = {
 };
 
 let win = null;
+let pageReady = false;
+let pendingProject = null;
 
 const DOWNLOAD_FILTERS = {
   wav: { name: 'WAV audio', extensions: ['wav'] },
+  tapehouse: { name: 'Tapehouse project', extensions: ['tapehouse'] },
   zip: { name: 'Zip archive', extensions: ['zip'] },
   json: { name: 'Tapehouse plugin', extensions: ['json'] },
 };
@@ -122,6 +126,30 @@ function buildMenu() {
   ]));
 }
 
+/* A project passed on the command line waits here until the page can take it. */
+function takeProjectArg(argv) {
+  const file = projectPathFrom(argv);
+  if (file) pendingProject = file;
+}
+
+async function sendPendingProject() {
+  if (!pendingProject || !pageReady || !win || win.isDestroyed()) return;
+  const file = pendingProject;
+  pendingProject = null;
+  try {
+    const bytes = await fs.readFile(file);
+    win.webContents.send('tapehouse:open-project', { name: path.basename(file), bytes });
+  } catch (e) {
+    dialog.showMessageBox(win, {
+      type: 'warning',
+      title: 'Tapehouse',
+      message: `Could not open ${path.basename(file)}`,
+      detail: e.message,
+      buttons: ['OK'],
+    });
+  }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1500,
@@ -157,15 +185,24 @@ function createWindow() {
   });
 
   win.loadURL(`${APP_ORIGIN}/Tapehouse.html`);
+
+  win.webContents.on('did-finish-load', () => {
+    pageReady = true;
+    sendPendingProject();
+  });
 }
+
+takeProjectArg(process.argv);
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (event, argv) => {
     if (!win) return;
     if (win.isMinimized()) win.restore();
     win.focus();
+    takeProjectArg(argv);
+    sendPendingProject();
   });
   app.on('window-all-closed', () => app.quit());
   app.whenReady().then(() => {

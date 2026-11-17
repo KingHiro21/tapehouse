@@ -32,6 +32,10 @@ on Windows — so build it on Windows, or on Linux/macOS with Wine installed.
 
 Needs Node 18+. `npm run build` (or `./build.sh`) still just writes `dist/`.
 
+Projects save as `.tapehouse` bundles. The installer registers that extension, so
+double-clicking one opens it; a file dropped onto `Tapehouse.exe` (or passed to a
+second launch of an open app) opens in the window that is already running.
+
 How the shell works: `electron/main.js` serves `dist/Tapehouse.html` from a secure
 `app://` origin, so the AudioWorklet engine, the mic and storage behave as they do in
 Chrome. The fonts are inlined into the page (`tools/fetch-fonts.mjs` refreshes them from

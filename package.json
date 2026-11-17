@@ -32,6 +32,15 @@
       "dist/Tapehouse.html",
       "package.json"
     ],
+    "fileAssociations": [
+      {
+        "ext": "tapehouse",
+        "name": "Tapehouse project",
+        "description": "Tapehouse project bundle",
+        "icon": "build/icon.ico",
+        "role": "Editor"
+      }
+    ],
     "win": {
       "icon": "build/icon.ico",
       "target": "nsis"

@@ -72,6 +72,11 @@ async function run() {
   check('a dev run keeps the normal profile', Object.keys(calls.overriddenPaths).length === 0,
     JSON.stringify(calls.overriddenPaths));
 
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  check('installer registers the project extension',
+    (pkg.build.fileAssociations || []).some(entry => entry.ext === 'tapehouse' && entry.name),
+    JSON.stringify(pkg.build.fileAssociations));
+
   const serve = calls.protocolHandlers.app;
   check('app:// protocol handler registered', typeof serve === 'function');
   if (typeof serve === 'function') {
@@ -85,6 +90,7 @@ async function run() {
     check('fonts are bundled, not fetched',
       !/fonts\.googleapis|fonts\.gstatic/.test(built) && built.includes('id="th-fonts"') && built.includes('data:font/woff2'),
       'the built page still references a font host');
+    check('the page accepts projects from the shell', built.includes('onOpenProject'));
 
     check('/ serves Tapehouse.html', (await serve(new Request('app://tapehouse/'))).status === 200);
     check('missing file is 404', (await serve(new Request('app://tapehouse/nope.css'))).status === 404);
@@ -123,6 +129,8 @@ async function run() {
     check('preload bridges download outcomes',
       typeof win.options.webPreferences.preload === 'string' && fs.existsSync(win.options.webPreferences.preload),
       win.options.webPreferences.preload);
+    check('preload offers the project bridge',
+      fs.readFileSync(win.options.webPreferences.preload, 'utf8').includes('onOpenProject'));
     check('renderer stays sandboxed', win.options.webPreferences.sandbox === true &&
       win.options.webPreferences.contextIsolation === true &&
       win.options.webPreferences.nodeIntegration === false);
@@ -189,6 +197,30 @@ async function run() {
     const told = page.sent[page.sent.length - 1];
     check('page is told the save was cancelled',
       !!told && told.payload.canceled === true && told.payload.path === null, JSON.stringify(told && told.payload));
+  }
+
+  /* A project double-clicked in Explorer, or dropped on the exe. */
+  {
+    const { projectPathFrom } = require('../electron/open-file');
+    const os = require('node:os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapehouse-open-'));
+    const projectFile = path.join(dir, 'Night Drive.tapehouse');
+    fs.writeFileSync(projectFile, Buffer.from('PK\u0003\u0004bundle'));
+
+    check('a .tapehouse argument is found',
+      projectPathFrom(['Tapehouse.exe', '--flag', projectFile]) === projectFile);
+    check('other arguments are ignored',
+      projectPathFrom(['Tapehouse.exe', '--remote-debugging-port=1', path.join(dir, 'notes.txt')]) === null);
+
+    win.webContents.fire('did-finish-load');
+    calls.appEvents['second-instance']({}, ['Tapehouse.exe', projectFile]);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const opened = win.webContents.sent.filter(m => m.channel === 'tapehouse:open-project').pop();
+    check('a second instance opens its project',
+      !!opened && opened.payload.name === 'Night Drive.tapehouse' && Buffer.from(opened.payload.bytes).length > 0,
+      opened && opened.payload.name);
+
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 
   const help = (calls.menu || []).find(item => item.label === 'Help');
