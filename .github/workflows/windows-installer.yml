@@ -31,6 +31,15 @@ jobs:
       - run: npm ci
       - run: npm run pack:win
       - run: node tools/smoke-win.mjs
+      - name: keep the failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-failure
+          path: |
+            smoke-failure.png
+            smoke-failure.txt
+          if-no-files-found: ignore
 
   installer:
     name: build NSIS installer

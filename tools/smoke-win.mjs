@@ -6,7 +6,7 @@
 
    Usage: node tools/smoke-win.mjs [path-to-exe]   (default: out/Tapehouse-win32-x64/Tapehouse.exe) */
 import { spawn } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,8 +40,44 @@ rmSync(profile, { recursive: true, force: true });
 console.log(`smoke: launching ${path.basename(exe)} on port ${port}`);
 const app = spawn(exe, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`], { stdio: 'inherit' });
 
+const problems = [];
+const SHOT = path.resolve('smoke-failure.png');
+const REPORT = path.resolve('smoke-failure.txt');
+let attached = false;
+let lastState = null;
+
+/* A blank page is hard to diagnose from a log line, so a failed run leaves the
+   window's pixels and a short report behind for the workflow to upload. */
+async function captureFailure() {
+  if (!attached) return;
+  try {
+    const shot = await Promise.race([
+      send('Page.captureScreenshot', { format: 'png' }),
+      sleep(5000).then(() => { throw new Error('timed out'); }),
+    ]);
+    writeFileSync(SHOT, Buffer.from(shot.data, 'base64'));
+    console.log(`smoke: screenshot saved to ${SHOT}`);
+  } catch (err) {
+    console.error(`smoke: could not capture a screenshot (${err.message})`);
+  }
+  try {
+    const lines = [
+      `page: ${lastState ? lastState.title : '(not read)'}`,
+      `elements: ${lastState ? lastState.state.elements : '?'}, text: ${lastState ? lastState.state.text : '?'} chars`,
+      `fonts: ${lastState ? JSON.stringify(lastState.fonts) : '(not checked)'}`,
+      '',
+      ...(problems.length ? problems : ['(no captured messages)']),
+    ];
+    writeFileSync(REPORT, lines.join('\n') + '\n');
+    console.log(`smoke: report saved to ${REPORT}`);
+  } catch (err) {
+    console.error(`smoke: could not write the report (${err.message})`);
+  }
+}
+
 async function stop(code, message) {
   if (message) console.error(`\nsmoke: ${message}`);
+  if (code !== 0) await captureFailure();
   if (app.exitCode === null && app.signalCode === null) {
     if (process.platform === 'win32') {
       const kill = spawn('taskkill', ['/pid', String(app.pid), '/T', '/F'], { stdio: 'ignore' });
@@ -74,8 +110,8 @@ await new Promise((resolve, reject) => {
   socket.addEventListener('open', resolve, { once: true });
   socket.addEventListener('error', () => reject(new Error('could not attach to the DevTools socket')), { once: true });
 });
+attached = true;
 
-const problems = [];
 // Chromium asks for a favicon nobody ships; that is not a reason to fail a build.
 const benign = text => /favicon\.ico/i.test(text);
 let loaded = false;
@@ -143,6 +179,7 @@ const fonts = await evaluate(`Promise.all([
   document.fonts.load('16px "IBM Plex Mono"'),
 ]).then(([display, mono]) => ({ display: display.length > 0, mono: mono.length > 0 }))`);
 
+lastState = { title: state.title, state, fonts };
 console.log(`smoke: ${state.title || '(no title)'} — ${state.elements} elements, ${state.text} chars of text`);
 
 if (state.elements < 200 || state.text < 200) await stop(1, `the page looks blank (${state.elements} elements, ${state.text} chars)`);
