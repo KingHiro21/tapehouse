@@ -1792,7 +1792,13 @@ function bindChrome() {
   // A project double-clicked in Explorer (or dropped on Tapehouse.exe) reaches us
   // from the shell; hand it to the same importer that handles a dropped file.
   if (window.tapehouse && window.tapehouse.onOpenProject) {
-    window.tapehouse.onOpenProject(({ name, bytes }) => importFiles([new File([bytes], name)]));
+    // Two files can arrive together when Explorer hands a second one over while
+    // the first is still opening; run them in order so the last one wins.
+    let opening = Promise.resolve();
+    window.tapehouse.onOpenProject(({ name, bytes }) => {
+      const take = () => importFiles([new File([bytes], name)]);
+      opening = opening.then(take, take);
+    });
   }
   $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
   const unlock = () => { if (!ctx || ctx.state !== 'running' || !unlockTried) ensureCtx(); };

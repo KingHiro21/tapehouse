@@ -34,7 +34,9 @@ const TYPES = {
 
 let win = null;
 let pageReady = false;
-let pendingProject = null;
+// Projects handed over before the page can take them, oldest first: a second file
+// can arrive while the first is still opening, or before the window exists.
+const pendingProjects = [];
 
 const DOWNLOAD_FILTERS = {
   wav: { name: 'WAV audio', extensions: ['wav'] },
@@ -132,24 +134,27 @@ function buildMenu() {
 /* A project passed on the command line waits here until the page can take it. */
 function takeProjectArg(argv) {
   const file = projectPathFrom(argv);
-  if (file) pendingProject = file;
+  if (file) pendingProjects.push(file);
 }
 
-async function sendPendingProject() {
-  if (!pendingProject || !pageReady || !win || win.isDestroyed()) return;
-  const file = pendingProject;
-  pendingProject = null;
-  try {
-    const bytes = fs.readFileSync(file);
-    win.webContents.send('tapehouse:open-project', { name: path.basename(file), bytes });
-  } catch (e) {
-    dialog.showMessageBox(win, {
-      type: 'warning',
-      title: 'Tapehouse',
-      message: `Could not open ${path.basename(file)}`,
-      detail: e.message,
-      buttons: ['OK'],
-    });
+/* Hands over everything that queued up while the page was still starting, in the
+   order it arrived, so a later file never replaces one that is being opened. */
+function sendPendingProject() {
+  if (!pageReady || !win || win.isDestroyed()) return;
+  while (pendingProjects.length) {
+    const file = pendingProjects.shift();
+    try {
+      const bytes = fs.readFileSync(file);
+      win.webContents.send('tapehouse:open-project', { name: path.basename(file), bytes });
+    } catch (e) {
+      dialog.showMessageBox(win, {
+        type: 'warning',
+        title: 'Tapehouse',
+        message: `Could not open ${path.basename(file)}`,
+        detail: e.message,
+        buttons: ['OK'],
+      });
+    }
   }
 }
 
@@ -201,10 +206,12 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', (event, argv) => {
+    // Queue the project first: a second launch can land before this instance has
+    // a window, and that file still has to open once the page is ready.
+    takeProjectArg(argv);
     if (!win) return;
     if (win.isMinimized()) win.restore();
     win.focus();
-    takeProjectArg(argv);
     sendPendingProject();
   });
   app.on('window-all-closed', () => app.quit());

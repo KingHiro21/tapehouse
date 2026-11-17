@@ -3,7 +3,8 @@
    blank page, a console error, any network request, or a missing bundled font.
    It then does what Explorer does — starts the app with a .tapehouse file, then
    launches a second copy with another file — to prove the window that is already
-   open takes the project instead of a second app appearing.
+   open takes the project instead of a second app appearing. The last phase does
+   the same while the first copy is still starting, when there is no window yet.
 
    Talks to Chromium's DevTools protocol directly, so it needs no extra npm packages
    — just Node 22+, which has fetch, WebSocket and zlib.crc32 built in.
@@ -173,6 +174,12 @@ async function captureFailure() {
 }
 
 const alive = proc => proc.exitCode === null && proc.signalCode === null;
+
+/* A hand-off copy should quit once it passes its project on, not open a window. */
+const waitForExit = async (proc, ms = 10_000) => (alive(proc) ? Promise.race([
+  new Promise(resolve => proc.once('exit', code => resolve(code))),
+  sleep(ms).then(() => 'still running'),
+]) : proc.exitCode);
 
 async function closeApp(proc) {
   if (!proc || !alive(proc)) return;
@@ -366,18 +373,38 @@ const after = await pages(hookPort);
 if (!alive(hookApp)) await stop(1, 'the first app exited instead of keeping its window');
 if (after.length !== 1) await stop(1, `the second launch left ${after.length} app windows instead of one`);
 if (after[0].id !== hookTarget.id) await stop(1, 'the second launch replaced the window instead of reusing it');
-const secondExit = !alive(secondApp) ? secondApp.exitCode : await Promise.race([
-  new Promise(resolve => secondApp.once('exit', code => resolve(code))),
-  sleep(10_000).then(() => 'still running'),
-]);
+const secondExit = await waitForExit(secondApp);
 if (secondExit !== 0) await stop(1, `the second launch ended with ${secondExit} instead of handing the project over and quitting`);
 console.log('smoke: the second launch handed its project to the running window');
+
+/* ---------- 4. a second file arriving before there is a window ---------- */
+
+const early = writeBundle(scratch, 'Smoke Gamma');
+const later = writeBundle(scratch, 'Smoke Delta');
+const racePort = await freePort();
+const raceProfile = path.join(scratch, 'race');
+console.log(`smoke: opening ${path.basename(early)}, then ${path.basename(later)} straight after`);
+const raceApp = launch('race first', [`--remote-debugging-port=${racePort}`, `--user-data-dir=${raceProfile}`, early]);
+// No pause between the two: the second file arrives while the first copy is still
+// booting, so its project has to wait for a window instead of being dropped.
+const raceSecond = launch('race second', [`--user-data-dir=${raceProfile}`, later]);
+
+const raceTarget = await attach(raceApp, racePort, 'when given two projects');
+await expectProject('Smoke Delta');
+const raceWindows = await pages(racePort);
+if (!alive(raceApp)) await stop(1, 'the first app exited during the quick second launch');
+if (raceWindows.length !== 1 || raceWindows[0].id !== raceTarget.id) {
+  await stop(1, `the quick second launch left ${raceWindows.length} window(s) instead of the one that was starting`);
+}
+const raceExit = await waitForExit(raceSecond);
+if (raceExit !== 0) await stop(1, `the quick second launch ended with ${raceExit} instead of handing the project over`);
+console.log('smoke: the quick second file reached the window that was still starting');
 
 if (problems.length) await stop(1, `${problems.length} problem(s):\n  ${problems.join('\n  ')}`);
 
 console.log('smoke ok');
 // One annotation per green run, so the file hooks are visible without the job log.
 if (process.env.GITHUB_ACTIONS) {
-  console.log('::notice title=smoke::page rendered | opened "Smoke Alpha" from the command line | a second launch handed "Smoke Beta" to the running window');
+  console.log('::notice title=smoke::page rendered | opened "Smoke Alpha" from the command line | a second launch handed "Smoke Beta" to the running window | two files in quick succession opened "Smoke Delta"');
 }
 await stop(0, null);

@@ -6,6 +6,7 @@
 
 const Module = require('node:module');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const stubPath = path.join(__dirname, 'stub-electron.js');
@@ -56,8 +57,30 @@ function check(label, ok, detail) {
 
 async function run() {
   const app = electron.app;
+
+  /* Explorer can hand a project over before the app has built its window. Both
+     files have to wait for one, and open in the order they arrived. */
+  const early = fs.mkdtempSync(path.join(os.tmpdir(), 'tapehouse-early-'));
+  const earlyFiles = ['Early One.tapehouse', 'Early Two.tapehouse'].map(name => {
+    const file = path.join(early, name);
+    fs.writeFileSync(file, Buffer.from('PK\u0003\u0004bundle'));
+    return file;
+  });
+  calls.appEvents['second-instance']({}, ['Tapehouse.exe', earlyFiles[0]]);
+  calls.appEvents['second-instance']({}, ['Tapehouse.exe', earlyFiles[1]]);
+
   await app.whenReady();
   await new Promise(resolve => setImmediate(resolve));
+
+  const earlyWin = calls.windows[0];
+  earlyWin.webContents.fire('did-finish-load');
+  const earlyOpened = earlyWin.webContents.sent.filter(m => m.channel === 'tapehouse:open-project');
+  check('a file handed over before the window exists is kept', earlyOpened.length === 2,
+    `${earlyOpened.length} delivered`);
+  check('early files open in the order they arrived',
+    earlyOpened.map(m => m.payload.name).join(' → ') === 'Early One.tapehouse → Early Two.tapehouse',
+    earlyOpened.map(m => m.payload.name).join(' → '));
+  fs.rmSync(early, { recursive: true, force: true });
 
   const schemes = calls.privilegedSchemes;
   check('app:// registered as standard + secure',
