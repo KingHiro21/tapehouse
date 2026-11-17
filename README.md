@@ -42,10 +42,13 @@ second launch of an open app) opens in the window that is already running.
 
 ### After installing, check the file hooks
 
-Save a project first (`File` → `Save project bundle`), then try the three ways in:
+Save a project first: press **Project** (or the name field beside it), then in the
+**Export** row choose **Project bundle**, and note the folder you save into. The window
+title stays "Tapehouse", so check the project by its name field. Then try the three
+ways in:
 
-1. **Double-click** the `.tapehouse` file in Explorer. Tapehouse starts and the
-   project's name shows in the title bar — not just an empty Untitled session.
+1. **Double-click** the `.tapehouse` file in Explorer. Tapehouse starts with that
+   project's name in the name field at the top — not "Untitled".
 2. With Tapehouse already open on another project, **double-click a second**
    `.tapehouse` file. The open window comes to the front and switches to it; no
    second Tapehouse appears in the taskbar.
