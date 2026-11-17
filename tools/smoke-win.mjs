@@ -4,7 +4,9 @@
    It then does what Explorer does — starts the app with a .tapehouse file, then
    launches a second copy with another file — to prove the window that is already
    open takes the project instead of a second app appearing. The last phase does
-   the same while the first copy is still starting, when there is no window yet.
+   the same while the first copy is still starting, when there is no window yet. A
+   last phase hands over a .tapehouse the app cannot read and checks the open
+   project survives it.
 
    Talks to Chromium's DevTools protocol directly, so it needs no extra npm packages
    — just Node 22+, which has fetch, WebSocket and zlib.crc32 built in.
@@ -90,6 +92,14 @@ function writeBundle(dir, name) {
   const manifest = { format: 'tapehouse-bundle', version: 1, project, plugins: [], samples: [] };
   const file = path.join(dir, `${name}.tapehouse`);
   writeFileSync(file, zipStore([{ name: 'tapehouse-project.json', data: Buffer.from(JSON.stringify(manifest)) }]));
+  return file;
+}
+
+/* The right container with a manifest that holds no project: what a truncated or
+   half-written bundle looks like to the app. */
+function writeDamagedBundle(dir, name) {
+  const file = path.join(dir, `${name}.tapehouse`);
+  writeFileSync(file, zipStore([{ name: 'tapehouse-project.json', data: Buffer.from('{"format":"tapehouse-bundle"}') }]));
   return file;
 }
 
@@ -306,6 +316,22 @@ const readFonts = () => session.evaluate(`Promise.all([
   document.fonts.load('16px "IBM Plex Mono"'),
 ]).then(([display, mono]) => ({ display: display.length > 0, mono: mono.length > 0 }))`);
 
+/* Problems the page cannot fix are reported in an error toast, not by replacing
+   the window; wait for one that mentions the given word. */
+async function waitForErrorToast(word) {
+  const startedAt = Date.now();
+  let seen = '';
+  while (Date.now() - startedAt < HOOK_TIMEOUT) {
+    seen = await session.evaluate(`(() => {
+      const box = document.getElementById('toasts');
+      return box ? [...box.querySelectorAll('.toast.error')].map(t => t.innerText).join(' | ') : '';
+    })()`);
+    if (seen.toLowerCase().includes(word)) return seen;
+    await sleep(250);
+  }
+  return null;
+}
+
 async function expectProject(name) {
   const startedAt = Date.now();
   let seen = '';
@@ -400,11 +426,34 @@ const raceExit = await waitForExit(raceSecond);
 if (raceExit !== 0) await stop(1, `the quick second launch ended with ${raceExit} instead of handing the project over`);
 console.log('smoke: the quick second file reached the window that was still starting');
 
+/* ---------- 5. a damaged project bundle ---------- */
+
+const broken = writeDamagedBundle(scratch, 'Smoke Broken');
+console.log(`smoke: opening ${path.basename(broken)}, which the app cannot read`);
+const beforeDamage = await session.evaluate(`(document.getElementById('projName') || {}).value || ''`);
+const brokenApp = launch('damaged launch', [`--user-data-dir=${raceProfile}`, broken]);
+
+if (!await waitForErrorToast('damaged')) await stop(1, 'the damaged bundle was never reported to the user');
+if (!alive(raceApp)) await stop(1, 'the app exited on a damaged project bundle');
+const afterDamage = await session.evaluate(`(() => ({
+  name: (document.getElementById('projName') || {}).value || '',
+  controls: ['#playBtn', '#stopBtn', '#bpm', '#projName', '#importBtn', '#app']
+    .filter(sel => document.querySelector(sel)).length,
+}))()`);
+if (afterDamage.name !== beforeDamage) {
+  await stop(1, `the damaged bundle changed the project from "${beforeDamage}" to "${afterDamage.name}"`);
+}
+if (afterDamage.controls < 6) await stop(1, `the page lost its controls after a damaged bundle (${afterDamage.controls}/6)`);
+if ((await pages(racePort)).length !== 1) await stop(1, 'the damaged bundle opened a second window');
+const brokenExit = await waitForExit(brokenApp);
+if (brokenExit !== 0) await stop(1, `the damaged bundle's launch ended with ${brokenExit}`);
+console.log('smoke: the damaged bundle was reported and the open project stayed');
+
 if (problems.length) await stop(1, `${problems.length} problem(s):\n  ${problems.join('\n  ')}`);
 
 console.log('smoke ok');
 // One annotation per green run, so the file hooks are visible without the job log.
 if (process.env.GITHUB_ACTIONS) {
-  console.log('::notice title=smoke::page rendered | opened "Smoke Alpha" from the command line | a second launch handed "Smoke Beta" to the running window | two files in quick succession opened "Smoke Delta"');
+  console.log('::notice title=smoke::page rendered | opened "Smoke Alpha" from the command line | a second launch handed "Smoke Beta" to the running window | two files in quick succession opened "Smoke Delta" | a damaged bundle was reported without dropping "Smoke Delta"');
 }
 await stop(0, null);
