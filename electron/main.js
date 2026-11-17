@@ -4,7 +4,7 @@
    from a secure app:// origin (so the mic, AudioWorklets and storage behave as they
    do in Chrome) and puts it in a native window. */
 const { app, BrowserWindow, Menu, dialog, protocol, session, shell } = require('electron');
-const fs = require('node:fs/promises');
+const fs = require('node:fs');
 const path = require('node:path');
 const { portableDataDir } = require('./profile');
 const { projectPathFrom } = require('./open-file');
@@ -80,7 +80,8 @@ function serveApp() {
     const file = path.join(WEB_DIR, pathname === '/' ? 'Tapehouse.html' : pathname.replace(/^\/+/, ''));
     if (!file.startsWith(WEB_DIR + path.sep)) return new Response('Not found', { status: 404 });
     try {
-      const data = await fs.readFile(file);
+      // The sync read is the documented one for files inside app.asar.
+      const data = fs.readFileSync(file);
       return new Response(data, { headers: { 'content-type': TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream' } });
     } catch (e) {
       // A packaged build must say which file it could not reach.
@@ -139,7 +140,7 @@ async function sendPendingProject() {
   const file = pendingProject;
   pendingProject = null;
   try {
-    const bytes = await fs.readFile(file);
+    const bytes = fs.readFileSync(file);
     win.webContents.send('tapehouse:open-project', { name: path.basename(file), bytes });
   } catch (e) {
     dialog.showMessageBox(win, {

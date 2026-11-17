@@ -5,8 +5,8 @@
    — just Node 22+, which has fetch and WebSocket built in.
 
    Usage: node tools/smoke-win.mjs [path-to-exe]   (default: out/Tapehouse-win32-x64/Tapehouse.exe) */
-import { spawn } from 'node:child_process';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,6 +56,25 @@ const REPORT = path.resolve('smoke-failure.txt');
 let attached = false;
 let lastState = null;
 
+/* What the packaged app actually ships, in case the page it asks for is not there. */
+function packageNotes() {
+  const resources = path.join(path.dirname(exe), 'resources');
+  const asar = path.join(resources, 'app.asar');
+  if (!existsSync(asar)) {
+    try { return [`no app.asar; resources: ${readdirSync(resources).join(', ')}`]; }
+    catch (e) { return [`no resources folder (${e.code})`]; }
+  }
+  const notes = [`app.asar ${Math.round(statSync(asar).size / 1024)} KB`];
+  try {
+    const tool = path.join('node_modules', '@electron', 'asar', 'bin', 'asar.js');
+    const list = execFileSync(process.execPath, [tool, 'list', asar], { encoding: 'utf8' });
+    notes.push(...list.trim().split('\n').filter(Boolean).slice(0, 24));
+  } catch (e) {
+    notes.push(`listing failed: ${String(e.message).split('\n')[0]}`);
+  }
+  return notes;
+}
+
 /* A blank page is hard to diagnose from a log line, so a failed run leaves the
    window's pixels and a short report behind for the workflow to upload. */
 async function captureFailure() {
@@ -80,6 +99,9 @@ async function captureFailure() {
       '',
       'app output:',
       ...(appLog.length ? appLog.join('').trim().split('\n').slice(-15) : ['(none)']),
+      '',
+      'package:',
+      ...packageNotes(),
     ];
     writeFileSync(REPORT, lines.join('\n') + '\n');
     console.log(`smoke: report saved to ${REPORT}`);
