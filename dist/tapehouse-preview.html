@@ -5350,49 +5350,49 @@ const CHAINS = {
   /* Artist-style chains. Each mirrors the processing chain their engineers have described, plugin for plugin where we have an equivalent.
      Exact knob settings were never published, so settings are typical starting points for those processors. */
   breezy: { artist: true, label: 'Chris Brown style', short: 'Chris Brown',
-    desc: 'Teezio’s chain: Auto-Tune printed while he sings at 12 ms (he uses 11–13), no humanize, 100 Hz cut and 5–7 kHz lift, Pultec air, 1176, RVox, Soothe, Pro-DS, Pro-C2, Doubler, quarter-note H-Delay, VintageVerb.',
+    desc: 'Teezio’s chain, tuned to sit under the voice rather than on top of it (26 ms with humanize and flex), 100 Hz cut and 5–7 kHz lift, Pultec air, 1176, RVox, Soothe, Pro-DS, Pro-C2, Doubler, quarter-note H-Delay, VintageVerb.',
     fx: [LEVEL,
-      ['th.autotune', { retune: 12, humanize: 0, flex: 0, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'off' }],
+      ['th.autotune', { retune: 26, humanize: 0.22, flex: 0.2, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
       ['th.vocal-eq', { lowcut: 100, mud: -2, mudFreq: 300, presence: 1.5, presFreq: 5800, air: 3.5 }],
       ['th.vocal-comp', { mode: 'fet', amount: 0.32, ratio: 4, attack: 0.4, release: 120, output: 2.5 }],
       ['th.vocal-comp', { mode: 'vox', amount: 0.3, output: 1.5 }],
       ['th.deharsh', { depth: 4, sens: 0.5 }],
       ['th.deesser', { freq: 6500, thresh: -30, range: 7 }],
       ['th.vocal-comp', { mode: 'clean', amount: 0.18, ratio: 2, attack: 10, release: 150, output: 1.8 }],
-      ['th.doubler', { mix: 0.22, spread: 14, depth: 0.5, voices: 4 }],
-      ['th.tape-delay', { time: 1, feedback: 0.25, tone: 3500, mix: 0.1 }],
-      ['th.room-reverb', { size: 1.8, damp: 9500, predelay: 0.025, mix: 0.14 }],
+      ['th.doubler', { mix: 0.18, spread: 12, depth: 0.5, voices: 2 }],
+      ['th.tape-delay', { time: 1, feedback: 0.22, tone: 3200, mix: 0.09 }],
+      ['th.room-reverb', { size: 1.6, damp: 9500, predelay: 0.025, mix: 0.12 }],
       SAFE] },
   bieber: { artist: true, label: 'Justin Bieber style', short: 'Bieber',
-    desc: 'Josh Gudwin’s chain: light Auto-Tune (20 / 20 / 20), Manley-style cuts at 330 Hz and 3 kHz with an airy top, LA-2A then 1176, multiband smoothing, de-esser, Dimension D width, ping-pong delay, plate.',
+    desc: 'Josh Gudwin’s chain: light Auto-Tune (30 ms, natural), Manley-style cuts at 330 Hz and 3 kHz with an airy top, LA-2A then 1176, multiband smoothing, de-esser, Dimension D width, ping-pong delay, plate.',
     fx: [LEVEL,
-      ['th.autotune', { retune: 20, humanize: 0.2, flex: 0.2, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
+      ['th.autotune', { retune: 30, humanize: 0.3, flex: 0.25, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
       ['th.vocal-eq', { lowcut: 90, mud: -3, mudFreq: 330, presence: -1.5, presFreq: 3000, air: 3 }],
       ['th.vocal-comp', { mode: 'opto', amount: 0.38, output: 2.5 }],
       ['th.vocal-comp', { mode: 'fet', amount: 0.22, ratio: 4, attack: 0.8, release: 80, output: 1 }],
       ['th.deharsh', { depth: 3, sens: 0.4 }],
       ['th.deesser', { freq: 7000, thresh: -32, range: 6 }],
-      ['th.doubler', { mix: 0.16, spread: 10, depth: 0.6, voices: 2 }],
-      ['th.pingpong', { time: 0.5, feedback: 0.3, tone: 4500, mix: 0.1 }],
-      ['th.room-reverb', { size: 1.5, damp: 10000, predelay: 0.02, mix: 0.15 }],
+      ['th.doubler', { mix: 0.3, spread: 18, depth: 0.65, voices: 4 }],
+      ['th.pingpong', { time: 0.5, feedback: 0.34, tone: 4800, mix: 0.16 }],
+      ['th.room-reverb', { size: 2.2, damp: 10000, predelay: 0.03, mix: 0.22 }],
       SAFE] },
   laroi: { artist: true, label: 'Kid LAROI style', short: 'Kid LAROI',
-    desc: 'Clint Gibbs’ chain: Auto-Tune Pro, fast (8 ms) and audible with a little humanize and flex, RVox, C6-style compression, Pro-DS, AE600 + Soothe resonance control, MicroShift back spread, eighth-note H-Delay, VintageVerb.',
+    desc: 'Clint Gibbs’ chain: Auto-Tune Pro, moderate (20 ms) with humanize and flex so the tuning is felt but not heard, RVox, C6-style compression, Pro-DS, AE600 + Soothe resonance control, MicroShift back spread, eighth-note H-Delay, VintageVerb.',
     fx: [LEVEL,
-      ['th.autotune', { retune: 8, humanize: 0.15, flex: 0.1, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'off' }],
+      ['th.autotune', { retune: 20, humanize: 0.25, flex: 0.2, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
       ['th.vocal-eq', { lowcut: 100, mud: -2, mudFreq: 280, presence: 2, presFreq: 3000, air: 2.5 }],
       ['th.vocal-comp', { mode: 'vox', amount: 0.36, output: 2.5 }],
       ['th.vocal-comp', { mode: 'clean', amount: 0.25, ratio: 2.5, attack: 8, release: 120, output: 2.7 }],
       ['th.deesser', { freq: 7000, thresh: -30, range: 8 }],
       ['th.deharsh', { depth: 5, sens: 0.6 }],
-      ['th.doubler', { mix: 0.3, spread: 18, depth: 0.7, voices: 4 }],
-      ['th.tape-delay', { time: 0.5, feedback: 0.28, tone: 3000, mix: 0.12 }],
-      ['th.room-reverb', { size: 2.6, damp: 8500, predelay: 0.02, mix: 0.18 }],
+      ['th.doubler', { mix: 0.38, spread: 20, depth: 0.75, voices: 4 }],
+      ['th.tape-delay', { time: 0.5, feedback: 0.32, tone: 2800, mix: 0.2 }],
+      ['th.room-reverb', { size: 3.2, damp: 8000, predelay: 0.035, mix: 0.28 }],
       SAFE] },
   mgk: { artist: true, label: 'MGK style', short: 'MGK',
     desc: 'Adam Hawkins’ chain: tuned polish, C4 + RCompressor, Decapitator grit, Pro-Q high-pass, Scheps Omni (300 Hz cut, very high ratio), R-De-Esser, a touch of dbx 160, J37 slap, MicroShift, eighth-note EchoBoy and Little Plate.',
     fx: [LEVEL,
-      ['th.autotune', { retune: 15, humanize: 0.1, flex: 0.1, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'off' }],
+      ['th.autotune', { retune: 24, humanize: 0.2, flex: 0.15, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
       ['th.vocal-comp', { mode: 'clean', amount: 0.3, ratio: 3, attack: 5, release: 100, output: 1 }],
       ['th.vocal-comp', { mode: 'clean', amount: 0.22, ratio: 3, attack: 12, release: 140, output: 1 }],
       ['th.saturator', { drive: 0.35, tone: 9000, mix: 0.45, output: 0 }],
@@ -5400,10 +5400,10 @@ const CHAINS = {
       ['th.vocal-comp', { mode: 'fet', amount: 0.28, ratio: 12, attack: 0.5, release: 80, output: 2 }],
       ['th.deesser', { freq: 6500, thresh: -30, range: 7 }],
       ['th.vocal-comp', { mode: 'clean', amount: 0.12, ratio: 2, attack: 15, release: 150, output: 0.5 }],
-      ['th.tape-delay', { time: 0.25, feedback: 0.05, tone: 4000, mix: 0.12 }],
-      ['th.doubler', { mix: 0.24, spread: 12, depth: 0.6, voices: 2 }],
-      ['th.pingpong', { time: 0.5, feedback: 0.25, tone: 3500, mix: 0.08 }],
-      ['th.room-reverb', { size: 1.4, damp: 8000, predelay: 0.015, mix: 0.12 }],
+      ['th.tape-delay', { time: 0.25, feedback: 0.08, tone: 4000, mix: 0.16 }],
+      ['th.doubler', { mix: 0.2, spread: 10, depth: 0.55, voices: 2 }],
+      ['th.pingpong', { time: 0.5, feedback: 0.25, tone: 3500, mix: 0.1 }],
+      ['th.room-reverb', { size: 1.8, damp: 8000, predelay: 0.015, mix: 0.16 }],
       SAFE] },
 };
 const MIC_ERR = {
@@ -6972,7 +6972,12 @@ const SUITE_MACROS = {
       if (M.comp2 && M.comp) out.comp2 = { amount: +clamp(+M.comp2.params.amount * a / Math.max(0.02, +M.comp.params.amount || 0.05), 0.02, 0.9).toFixed(3) };
       return out; } },
   width: { off: 0, mod: 'space', label: 'Width', min: 0, max: 100, def: 20, fmt: pct, roles: ['width'], get: M => clamp(+M.width.params.mix / 0.004, 0, 100), set: v => ({ width: { mix: +(v * 0.004).toFixed(3) } }) },
+  depth: { mod: 'tune', label: 'Tune depth', min: 0, max: 100, step: 1, def: 100, fmt: pct, roles: ['tune'], get: M => Math.round(clamp(+(M.tune.params.amount ?? 1), 0, 1) * 100), set: v => ({ tune: { amount: +(v / 100).toFixed(2) } }) },
+  formant: { off: 0, mod: 'tune', label: 'Formant', min: -3, max: 3, step: 0.5, bipolar: true, def: 0, fmt: v => (v > 0 ? '+' : '') + (+v).toFixed(1) + ' st', roles: ['tune'], get: M => clamp(+(M.tune.params.formant ?? 0), -3, 3), set: v => ({ tune: { formant: +(+v).toFixed(1) } }) },
   delay: { off: 0, mod: 'space', label: 'Delay', min: 0, max: 100, def: 20, fmt: pct, roles: ['delay'], get: M => clamp(+M.delay.params.mix / 0.004, 0, 100), set: v => ({ delay: { mix: +(v * 0.004).toFixed(3) } }) },
+  echoFeedback: { off: 0, mod: 'space', label: 'Echo repeats', min: 0, max: 88, step: 1, def: 25, fmt: pct, roles: ['delay'], get: M => clamp(Math.round(+(M.delay.params.feedback ?? 0.25) * 100), 0, 88), set: v => ({ delay: { feedback: +(v / 100).toFixed(3) } }) },
+  echoTone: { off: 0, mod: 'space', label: 'Echo tone', min: 700, max: 14000, curve: 'log', def: 3500, fmt: v => (v >= 1000 ? (v / 1000).toFixed(1) + ' kHz' : Math.round(v) + ' Hz'), roles: ['delay'], get: M => clamp(+(M.delay.params.tone ?? 3500), 700, 14000), set: v => ({ delay: { tone: Math.round(v) } }) },
+  predelay: { off: 0, mod: 'space', label: 'Pre-delay', min: 0, max: 120, step: 1, def: 20, fmt: v => Math.round(v) + ' ms', roles: ['reverb'], get: M => Math.round(clamp(+(M.reverb.params.predelay ?? 0.012), 0, 0.12) * 1000), set: v => ({ reverb: { predelay: +(v / 1000).toFixed(4) } }) },
   reverb: { off: 0, mod: 'space', label: 'Reverb', min: 0, max: 100, def: 25, fmt: pct, roles: ['reverb'], get: M => clamp(+M.reverb.params.mix / 0.005, 0, 100), set: v => ({ reverb: { mix: +(v * 0.005).toFixed(3) } }) },
   size: { mod: 'space', label: 'Room size', min: 0.4, max: 6, curve: 'log', def: 1.8, fmt: v => v.toFixed(1) + ' s', roles: ['reverb'], get: M => +(M.reverb.params.size ?? 1.8), set: v => ({ reverb: { size: +v.toFixed(2) } }) },
 };
@@ -7478,7 +7483,7 @@ function suitePanel(ins, tab, map) {
     const note = el('div', { class: 'vs-note' }, el('span', { class: 'vs-lbl' }, 'Current note'), el('b', { id: 'vsNote' }, '– –'),
       el('div', { class: 'vs-cents' }, el('i', { id: 'vsNeedle' }), el('span', {}, '−50'), el('span', {}, '−25'), el('span', {}, '0'), el('span', {}, '+25'), el('span', {}, '+50')), el('small', { id: 'vsNoteSub' }, 'Sing or play a vocal'));
     const feel = el('div', { class: 'vs-feel' }, TUNE_FEELS.map(([id, lab, rt]) => el('button', { class: 'vs-chip' + (tf && tuneFeelOf(tf) === id ? ' lit' : ''), onclick: () => { const t = TUNE_FEELS.find(x => x[0] === id); mutate(P => { suiteEnsure(P, ins, ['tune']); const f = suiteClassify(P.mixer[ins].fx).tune; f.bypass = false; Object.assign(f.params, { retune: t[2], humanize: t[3], flex: t[4], fcorr: t[5] }); }); } }, lab)));
-    return [headRow, el('div', { class: 'vs-tune' }, keyBox, note, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex']), feel))];
+    return [headRow, el('div', { class: 'vs-tune' }, keyBox, note, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex', 'depth', 'formant']), feel))];
   }
   if (tab === 'cleanup') return [headRow, knobs(['gate', 'deess', 'tamer', 'lowcut']), el('p', { class: 'vs-hint' }, 'Noise gate quiets the room between phrases, De-ess tames S sounds, Tamer pulls down harsh ringing.')];
   if (tab === 'tone') return [headRow, knobs(['warmth', 'presence', 'air', 'grit']), map.eqm ? el('p', { class: 'vs-hint' }, 'Listen & Match’s EQ stays underneath; these are your moves on top.') : null];
@@ -7489,9 +7494,21 @@ function suitePanel(ins, tab, map) {
         el('span', { class: 'vs-lbl' }, 'Auto level'), el('button', { class: 'vs-chip' + (map.level && !map.level.bypass ? ' lit' : ''), onclick: () => mutate(P => { const mp = suiteClassify(P.mixer[ins].fx); if (!mp.level) suiteEnsure(P, ins, ['level']); else mp.level.bypass = !mp.level.bypass; }) }, map.level && !map.level.bypass ? 'On: rides your mic level' : 'Off')),
       el('div', { class: 'vs-gr' }, el('span', { class: 'vs-lbl' }, 'Reduction'), el('b', { id: 'vsGr' }, '0.0 dB'), el('div', { class: 'vs-grbar' }, el('i', { id: 'vsGrBar' }))))];
   }
-  const dl = map.delay ? map.delay.params : null;
-  return [headRow, el('div', { class: 'vs-space' }, knobs(['width', 'delay', 'reverb', 'size']),
-    el('div', { class: 'vs-col' }, el('span', { class: 'vs-lbl' }, 'Delay time'), el('div', { class: 'vs-feel' }, DELAY_TIMES.map(t => el('button', { class: 'vs-chip' + (dl && +dl.time === t.value ? ' lit' : ''), onclick: () => { suiteWrite(ins, { delay: { time: t.value } }); renderView(); } }, t.label)))))];
+  const dl = map.delay ? map.delay.params : null, ping = !!map.delay && map.delay.plugin === 'th.pingpong';
+  // Tape and ping-pong share their four settings, so the echo style is just a swap of the effect.
+  const setEcho = kind => mutate(P2 => {
+    const m2 = suiteClassify(P2.mixer[ins].fx);
+    if (!m2.delay) suiteEnsure(P2, ins, ['delay']);
+    const f2 = suiteClassify(P2.mixer[ins].fx).delay;
+    if (f2) { f2.plugin = kind === 'ping' ? 'th.pingpong' : 'th.tape-delay'; f2.bypass = false; }
+  });
+  return [headRow, el('div', { class: 'vs-space' },
+    el('div', { class: 'vs-col' }, el('span', { class: 'vs-lbl' }, 'Echo'),
+      knobs(['delay', 'echoFeedback', 'echoTone']),
+      el('span', { class: 'vs-lbl' }, 'Echo time'), el('div', { class: 'vs-feel' }, DELAY_TIMES.map(t => el('button', { class: 'vs-chip' + (dl && +dl.time === t.value ? ' lit' : ''), onclick: () => { suiteWrite(ins, { delay: { time: t.value } }); renderView(); } }, t.label))),
+      el('div', { class: 'vs-feel' }, [['tape', 'Tape echo'], ['ping', 'Ping-pong']].map(([k, lab]) => el('button', { class: 'vs-chip' + ((k === 'ping') === ping ? ' lit' : ''), title: k === 'ping' ? 'Echoes bounce left and right' : 'Echoes repeat straight down the middle, darkening as they go', onclick: () => { setEcho(k); renderView(); } }, lab)))),
+    el('div', { class: 'vs-col' }, el('span', { class: 'vs-lbl' }, 'Room'), knobs(['reverb', 'size', 'predelay'])),
+    el('div', { class: 'vs-col' }, el('span', { class: 'vs-lbl' }, 'Width'), knobs(['width'])))];
 }
 /* One octave: lit keys are the notes Tune snaps to; while you sing, the key you're on glows and the one Tune lands on is marked. */
 function vsKeys(mask) {

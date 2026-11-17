@@ -291,7 +291,12 @@ const SUITE_MACROS = {
       if (M.comp2 && M.comp) out.comp2 = { amount: +clamp(+M.comp2.params.amount * a / Math.max(0.02, +M.comp.params.amount || 0.05), 0.02, 0.9).toFixed(3) };
       return out; } },
   width: { off: 0, mod: 'space', label: 'Width', min: 0, max: 100, def: 20, fmt: pct, roles: ['width'], get: M => clamp(+M.width.params.mix / 0.004, 0, 100), set: v => ({ width: { mix: +(v * 0.004).toFixed(3) } }) },
+  depth: { mod: 'tune', label: 'Tune depth', min: 0, max: 100, step: 1, def: 100, fmt: pct, roles: ['tune'], get: M => Math.round(clamp(+(M.tune.params.amount ?? 1), 0, 1) * 100), set: v => ({ tune: { amount: +(v / 100).toFixed(2) } }) },
+  formant: { off: 0, mod: 'tune', label: 'Formant', min: -3, max: 3, step: 0.5, bipolar: true, def: 0, fmt: v => (v > 0 ? '+' : '') + (+v).toFixed(1) + ' st', roles: ['tune'], get: M => clamp(+(M.tune.params.formant ?? 0), -3, 3), set: v => ({ tune: { formant: +(+v).toFixed(1) } }) },
   delay: { off: 0, mod: 'space', label: 'Delay', min: 0, max: 100, def: 20, fmt: pct, roles: ['delay'], get: M => clamp(+M.delay.params.mix / 0.004, 0, 100), set: v => ({ delay: { mix: +(v * 0.004).toFixed(3) } }) },
+  echoFeedback: { off: 0, mod: 'space', label: 'Echo repeats', min: 0, max: 88, step: 1, def: 25, fmt: pct, roles: ['delay'], get: M => clamp(Math.round(+(M.delay.params.feedback ?? 0.25) * 100), 0, 88), set: v => ({ delay: { feedback: +(v / 100).toFixed(3) } }) },
+  echoTone: { off: 0, mod: 'space', label: 'Echo tone', min: 700, max: 14000, curve: 'log', def: 3500, fmt: v => (v >= 1000 ? (v / 1000).toFixed(1) + ' kHz' : Math.round(v) + ' Hz'), roles: ['delay'], get: M => clamp(+(M.delay.params.tone ?? 3500), 700, 14000), set: v => ({ delay: { tone: Math.round(v) } }) },
+  predelay: { off: 0, mod: 'space', label: 'Pre-delay', min: 0, max: 120, step: 1, def: 20, fmt: v => Math.round(v) + ' ms', roles: ['reverb'], get: M => Math.round(clamp(+(M.reverb.params.predelay ?? 0.012), 0, 0.12) * 1000), set: v => ({ reverb: { predelay: +(v / 1000).toFixed(4) } }) },
   reverb: { off: 0, mod: 'space', label: 'Reverb', min: 0, max: 100, def: 25, fmt: pct, roles: ['reverb'], get: M => clamp(+M.reverb.params.mix / 0.005, 0, 100), set: v => ({ reverb: { mix: +(v * 0.005).toFixed(3) } }) },
   size: { mod: 'space', label: 'Room size', min: 0.4, max: 6, curve: 'log', def: 1.8, fmt: v => v.toFixed(1) + ' s', roles: ['reverb'], get: M => +(M.reverb.params.size ?? 1.8), set: v => ({ reverb: { size: +v.toFixed(2) } }) },
 };
@@ -797,7 +802,7 @@ function suitePanel(ins, tab, map) {
     const note = el('div', { class: 'vs-note' }, el('span', { class: 'vs-lbl' }, 'Current note'), el('b', { id: 'vsNote' }, '– –'),
       el('div', { class: 'vs-cents' }, el('i', { id: 'vsNeedle' }), el('span', {}, '−50'), el('span', {}, '−25'), el('span', {}, '0'), el('span', {}, '+25'), el('span', {}, '+50')), el('small', { id: 'vsNoteSub' }, 'Sing or play a vocal'));
     const feel = el('div', { class: 'vs-feel' }, TUNE_FEELS.map(([id, lab, rt]) => el('button', { class: 'vs-chip' + (tf && tuneFeelOf(tf) === id ? ' lit' : ''), onclick: () => { const t = TUNE_FEELS.find(x => x[0] === id); mutate(P => { suiteEnsure(P, ins, ['tune']); const f = suiteClassify(P.mixer[ins].fx).tune; f.bypass = false; Object.assign(f.params, { retune: t[2], humanize: t[3], flex: t[4], fcorr: t[5] }); }); } }, lab)));
-    return [headRow, el('div', { class: 'vs-tune' }, keyBox, note, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex']), feel))];
+    return [headRow, el('div', { class: 'vs-tune' }, keyBox, note, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex', 'depth', 'formant']), feel))];
   }
   if (tab === 'cleanup') return [headRow, knobs(['gate', 'deess', 'tamer', 'lowcut']), el('p', { class: 'vs-hint' }, 'Noise gate quiets the room between phrases, De-ess tames S sounds, Tamer pulls down harsh ringing.')];
   if (tab === 'tone') return [headRow, knobs(['warmth', 'presence', 'air', 'grit']), map.eqm ? el('p', { class: 'vs-hint' }, 'Listen & Match’s EQ stays underneath; these are your moves on top.') : null];
@@ -808,9 +813,21 @@ function suitePanel(ins, tab, map) {
         el('span', { class: 'vs-lbl' }, 'Auto level'), el('button', { class: 'vs-chip' + (map.level && !map.level.bypass ? ' lit' : ''), onclick: () => mutate(P => { const mp = suiteClassify(P.mixer[ins].fx); if (!mp.level) suiteEnsure(P, ins, ['level']); else mp.level.bypass = !mp.level.bypass; }) }, map.level && !map.level.bypass ? 'On: rides your mic level' : 'Off')),
       el('div', { class: 'vs-gr' }, el('span', { class: 'vs-lbl' }, 'Reduction'), el('b', { id: 'vsGr' }, '0.0 dB'), el('div', { class: 'vs-grbar' }, el('i', { id: 'vsGrBar' }))))];
   }
-  const dl = map.delay ? map.delay.params : null;
-  return [headRow, el('div', { class: 'vs-space' }, knobs(['width', 'delay', 'reverb', 'size']),
-    el('div', { class: 'vs-col' }, el('span', { class: 'vs-lbl' }, 'Delay time'), el('div', { class: 'vs-feel' }, DELAY_TIMES.map(t => el('button', { class: 'vs-chip' + (dl && +dl.time === t.value ? ' lit' : ''), onclick: () => { suiteWrite(ins, { delay: { time: t.value } }); renderView(); } }, t.label)))))];
+  const dl = map.delay ? map.delay.params : null, ping = !!map.delay && map.delay.plugin === 'th.pingpong';
+  // Tape and ping-pong share their four settings, so the echo style is just a swap of the effect.
+  const setEcho = kind => mutate(P2 => {
+    const m2 = suiteClassify(P2.mixer[ins].fx);
+    if (!m2.delay) suiteEnsure(P2, ins, ['delay']);
+    const f2 = suiteClassify(P2.mixer[ins].fx).delay;
+    if (f2) { f2.plugin = kind === 'ping' ? 'th.pingpong' : 'th.tape-delay'; f2.bypass = false; }
+  });
+  return [headRow, el('div', { class: 'vs-space' },
+    el('div', { class: 'vs-col' }, el('span', { class: 'vs-lbl' }, 'Echo'),
+      knobs(['delay', 'echoFeedback', 'echoTone']),
+      el('span', { class: 'vs-lbl' }, 'Echo time'), el('div', { class: 'vs-feel' }, DELAY_TIMES.map(t => el('button', { class: 'vs-chip' + (dl && +dl.time === t.value ? ' lit' : ''), onclick: () => { suiteWrite(ins, { delay: { time: t.value } }); renderView(); } }, t.label))),
+      el('div', { class: 'vs-feel' }, [['tape', 'Tape echo'], ['ping', 'Ping-pong']].map(([k, lab]) => el('button', { class: 'vs-chip' + ((k === 'ping') === ping ? ' lit' : ''), title: k === 'ping' ? 'Echoes bounce left and right' : 'Echoes repeat straight down the middle, darkening as they go', onclick: () => { setEcho(k); renderView(); } }, lab)))),
+    el('div', { class: 'vs-col' }, el('span', { class: 'vs-lbl' }, 'Room'), knobs(['reverb', 'size', 'predelay'])),
+    el('div', { class: 'vs-col' }, el('span', { class: 'vs-lbl' }, 'Width'), knobs(['width'])))];
 }
 /* One octave: lit keys are the notes Tune snaps to; while you sing, the key you're on glows and the one Tune lands on is marked. */
 function vsKeys(mask) {
