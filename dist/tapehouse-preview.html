@@ -274,6 +274,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 #libRail{display:none}
 @media (min-width:1100px){
   main{grid-template-columns:300px minmax(0,1fr)}
+  main.lib-min{grid-template-columns:56px minmax(0,1fr)}
   #libRail{display:flex;flex-direction:column;min-height:0;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--lift)}
   .tab[data-tab="library"]{display:none}
 }
@@ -447,6 +448,14 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 .lib-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;padding:4px 0 6px}
 .lib-actions input{flex:1 1 120px;min-height:30px;font-size:12.5px}
 .lib-foot{padding:10px 14px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;flex:none;font-size:11.5px;color:var(--faint)}
+.lib-title .btn{flex:none}
+.lib-check{width:16px;height:16px;margin:0 auto;display:block;accent-color:var(--accent);cursor:pointer}
+.lib-row.picked{background:linear-gradient(90deg,rgb(var(--accent-rgb) / .16),rgb(var(--accent-rgb) / 0))}
+.lib-reopen{display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;height:100%;padding:14px 6px;background:transparent;border:0;color:var(--muted);cursor:pointer}
+.lib-reopen:hover{color:var(--text);background:#18191d}
+.lib-reopen .ic{flex:none;opacity:.7}
+.lib-reopen-lbl{writing-mode:vertical-rl;font:500 11px var(--font-ui);letter-spacing:.16em;text-transform:uppercase;color:var(--faint)}
+.lib-reopen-count{font:400 10.5px var(--font-mono);color:var(--faint)}
 
 /* ---------- plugins ---------- */
 .pg-body{padding:16px;display:flex;flex-direction:column;gap:24px}
@@ -2768,6 +2777,7 @@ function readColors() {
 let project = null, downloads = null, factoryPending = false;
 const ui = { tab: 'create', cTags: [], cDesc: '', cCustom: false, cTitle: '', cLyrics: '', cBusy: false, cStatus: null, takes: [], songs: null, pvKey: null, pvLoading: false, selCh: null, prCh: null, prTool: 'draw', prLen: 4, prSel: null, prSnapKey: true, prCursor: 0, plBarW: 56, plSnap: 16, plSel: null, plBrush: null, plMark: null,
   selInsert: 1, libQuery: '', libFolder: 'All', libSel: null, importFolder: 'Imported', previewId: null, pluginDraft: '', sdkStatus: null,
+  libCollapsed: (() => { try { return localStorage.getItem('th.libCollapsed') === '1'; } catch (e) { return false; } })(), libPickMode: false, libPick: [],
   guide: true, ideaStyle: 'house', ideaProg: 'dark', askText: '', mixReport: null,
   rec: { metro: false, countIn: true, loopBars: 0, latencyMs: 0, monitor: false, deviceId: '' }, autoSel: null, autoBars: 4, autoFrom: null,
   ab: 'A', refPos: 0, masterBusy: null, masterInfo: null, refInfo: null, tone: null };
@@ -3942,51 +3952,91 @@ function drawPeaks(cv, peaks) {
 }
 function renderLibrary(host) {
   if (!host) return;
+  const rail = host.id === 'libRail', grid = document.querySelector('main');
+  if (grid) grid.classList.toggle('lib-min', !!(rail && ui.libCollapsed));
+  if (rail && ui.libCollapsed) {
+    host.replaceChildren(el('button', { class: 'lib-reopen', title: 'Show the library', 'aria-label': 'Show the library', onclick: () => setLibCollapsed(false) },
+      icon('right'), el('span', { class: 'lib-reopen-lbl' }, 'Library'), el('span', { class: 'lib-reopen-count' }, String(lib.size))));
+    return;
+  }
   const oldList = host.querySelector('.lib-list'), keepTop = oldList ? oldList.scrollTop : 0;
   const folders = [...new Set([...lib.values()].map(s => s.folder))].sort();
   if (ui.libFolder !== 'All' && !folders.includes(ui.libFolder)) ui.libFolder = 'All';
   $('#folderList').replaceChildren(...[...new Set(['Imported', 'My Music', 'Drums', 'Loops', 'Vocals', ...folders])].map(f => el('option', { value: f })));
   const list = el('div', { class: 'lib-list', role: 'list', 'data-scroll': 'lib' });
+  const visible = () => {
+    const q = ui.libQuery.trim().toLowerCase();
+    return sortedLib().filter(s => (ui.libFolder === 'All' || s.folder === ui.libFolder) && (!q || String(s.name).toLowerCase().includes(q) || String(s.folder).toLowerCase().includes(q)));
+  };
   const fill = () => {
     list.replaceChildren();
     if (!lib.size) { list.append(emptyState(factoryPending ? 'Setting up factory sounds…' : 'Your library is empty', 'Import audio, MIDI or a ZIP sample pack. Everything is stored in this browser.')); return; }
-    const q = ui.libQuery.trim().toLowerCase();
-    const items = sortedLib().filter(s => (ui.libFolder === 'All' || s.folder === ui.libFolder) && (!q || String(s.name).toLowerCase().includes(q) || String(s.folder).toLowerCase().includes(q)));
+    const items = visible();
     if (!items.length) { list.append(el('p', { class: 'hint', style: { padding: '12px' } }, 'No sounds match that search.')); return; }
     const frag = document.createDocumentFragment();
     for (const s of items.slice(0, 600)) frag.append(libRow(s));
     list.append(frag);
     if (items.length > 600) list.append(el('p', { class: 'hint', style: { padding: '8px 12px' } }, `Showing 600 of ${items.length}. Search to narrow it down.`));
   };
+  /* Tick a few rows and delete them together, instead of opening one sound at a time. */
+  const pickBar = () => {
+    const n = ui.libPick.length, all = visible(), every = !!all.length && all.every(s => ui.libPick.includes(s.id));
+    return el('div', { class: 'lib-foot pick' },
+      el('span', {}, `${n} picked`),
+      el('button', { class: 'btn sm ghost', onclick: () => { ui.libPick = every ? [] : all.map(s => s.id); renderLib(); } }, every ? 'Clear' : 'Select all'),
+      el('span', { class: 'spacer' }),
+      n ? confirmBtn(`Delete ${n}`, deletePicked, { cls: 'btn sm danger', confirm: 'Click again' }) : el('button', { class: 'btn sm danger', disabled: true }, 'Delete'));
+  };
   const foot = el('span', {}, Store.durable ? 'Stored in this browser on this device.' : 'Storage is blocked here, so imports won’t be kept.');
   host.replaceChildren(el('div', { class: 'lib' },
     el('div', { class: 'lib-head' },
       ui.guide && host.id === 'view' ? el('p', { class: 'hint', style: { margin: 0 } }, TIPS.library) : null,
-      el('div', { class: 'lib-title' }, el('h2', {}, 'Library'), el('span', { class: 'count' }, `${lib.size} sound${lib.size === 1 ? '' : 's'}`)),
-      el('label', { class: 'field' }, el('span', { class: 'lbl' }, 'Import into'), el('input', { type: 'text', list: 'folderList', value: ui.importFolder, 'aria-label': 'Folder for new imports', style: { flex: '1', minWidth: '0' }, onchange: e => { ui.importFolder = e.target.value.trim().slice(0, 40) || 'Imported'; } })),
-      el('div', { class: 'lib-drop' }, 'Press Import at the top, or drop files anywhere on the page: audio (WAV, MP3, FLAC, OGG, M4A), MIDI, ZIP sample packs, plugins or a Tapehouse project.'),
+      el('div', { class: 'lib-title' }, el('h2', {}, 'Library'), el('span', { class: 'count' }, `${lib.size} sound${lib.size === 1 ? '' : 's'}`),
+        el('span', { class: 'spacer' }),
+        lib.size ? el('button', { class: 'btn sm' + (ui.libPickMode ? '' : ' ghost'), 'aria-pressed': String(ui.libPickMode), title: ui.libPickMode ? 'Leave the selection' : 'Tick several sounds to delete them at once', onclick: togglePickMode }, ui.libPickMode ? 'Done' : 'Select') : null,
+        rail ? el('button', { class: 'btn sm icon ghost', 'aria-label': 'Hide the library', title: 'Hide the library', onclick: () => setLibCollapsed(true) }, icon('left')) : null),
+      el('label', { class: 'field' }, el('span', { class: 'lbl' }, 'Import into'), el('input', { type: 'text', list: 'folderList', value: ui.importFolder, title: 'Where single files go. A whole import of several files gets its own folder inside it.', 'aria-label': 'Folder for new imports', style: { flex: '1', minWidth: '0' }, onchange: e => { ui.importFolder = e.target.value.trim().slice(0, 40) || 'Imported'; } })),
+      el('div', { class: 'lib-drop' }, 'Press Import at the top, or drop files anywhere on the page: audio (WAV, MP3, FLAC, OGG, M4A), MIDI, ZIP sample packs, plugins or a Tapehouse project. Import several files at once and they land in their own folder.'),
       el('input', { type: 'search', placeholder: 'Search sounds', 'aria-label': 'Search the library', value: ui.libQuery, oninput: e => { ui.libQuery = e.target.value; fill(); } }),
       el('div', { class: 'chips' }, ['All', ...folders].map(f => el('button', { class: 'chip', 'aria-pressed': String(ui.libFolder === f), onclick: () => { ui.libFolder = f; renderLib(); } }, f)))),
     list,
-    el('div', { class: 'lib-foot' }, foot, el('button', { class: 'btn sm', disabled: !lib.size || !downloads, title: downloads ? 'Save every sound as one .zip' : 'Saving files isn’t available in this view', onclick: backupLibrary }, 'Back up (.zip)'))));
+    ui.libPickMode ? pickBar() : el('div', { class: 'lib-foot' }, foot, el('button', { class: 'btn sm', disabled: !lib.size || !downloads, title: downloads ? 'Save every sound as one .zip' : 'Saving files isn’t available in this view', onclick: backupLibrary }, 'Back up (.zip)'))));
   fill(); list.scrollTop = keepTop;
   if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then(est => { if (est && est.usage != null && Store.durable) foot.textContent = `Stored in this browser · ${fmtBytes(est.usage)} used`; }).catch(() => {});
 }
 function libRow(s) {
-  const sel = ui.libSel === s.id, playing = ui.previewId === s.id;
+  const pick = !!ui.libPickMode, picked = ui.libPick.includes(s.id), sel = ui.libSel === s.id, playing = ui.previewId === s.id;
   const cv = el('canvas', { width: '152', height: '48', 'aria-hidden': 'true' }); drawPeaks(cv, s.peaks);
-  const row = el('div', { class: 'lib-row' + (sel ? ' sel' : ''), role: 'listitem', draggable: true },
-    el('button', { class: 'btn icon play-mini' + (playing ? ' on' : ''), 'aria-label': (playing ? 'Stop ' : 'Preview ') + s.name, onclick: e => { e.stopPropagation(); previewSample(s.id); } }, icon(playing ? 'stop' : 'play')),
+  const lead = pick
+    ? el('input', { type: 'checkbox', class: 'lib-check', checked: picked, 'aria-label': `Pick ${s.name}`, onclick: e => { e.stopPropagation(); togglePick(s.id); } })
+    : el('button', { class: 'btn icon play-mini' + (playing ? ' on' : ''), 'aria-label': (playing ? 'Stop ' : 'Preview ') + s.name, onclick: e => { e.stopPropagation(); previewSample(s.id); } }, icon(playing ? 'stop' : 'play'));
+  const row = el('div', { class: 'lib-row' + (pick && picked ? ' picked' : sel && !pick ? ' sel' : ''), role: 'listitem', draggable: !pick },
+    lead,
     el('div', { style: { minWidth: '0' } }, el('div', { class: 'lib-name' }, s.name), el('div', { class: 'lib-sub' }, `${s.folder} · ${fmtDur(s.duration)} · ${String(s.ext).toUpperCase()}`)), cv);
-  row.addEventListener('click', () => { ui.libSel = sel ? null : s.id; renderLib(); });
+  row.addEventListener('click', () => { if (pick) { togglePick(s.id); return; } ui.libSel = sel ? null : s.id; renderLib(); });
   row.addEventListener('dragstart', e => { e.dataTransfer.setData(DT_SAMPLE, s.id); e.dataTransfer.setData('text/plain', s.name); e.dataTransfer.effectAllowed = 'copy'; });
-  if (sel) row.append(el('div', { class: 'lib-actions', onclick: e => e.stopPropagation() },
+  if (sel && !pick) row.append(el('div', { class: 'lib-actions', onclick: e => e.stopPropagation() },
     el('button', { class: 'btn sm', onclick: () => addSamplerChannel(s.id) }, 'Add to beat'),
     el('button', { class: 'btn sm', onclick: () => addAudioClip(s.id) }, 'Add to song'),
     el('input', { type: 'text', value: s.name, 'aria-label': 'Sound name', onchange: e => updateSample(s.id, { name: e.target.value.trim().slice(0, 80) || s.name }) }),
     el('input', { type: 'text', value: s.folder, list: 'folderList', 'aria-label': 'Folder', onchange: e => updateSample(s.id, { folder: e.target.value.trim().slice(0, 60) || 'Imported' }) }),
     confirmBtn('Delete', () => deleteSample(s.id), { cls: 'btn sm danger', confirm: 'Delete for good?' })));
   return row;
+}
+function setLibCollapsed(v) {
+  ui.libCollapsed = !!v;
+  try { localStorage.setItem('th.libCollapsed', v ? '1' : '0'); } catch (e) { /* ok */ }
+  renderLib();
+}
+function togglePickMode() {
+  ui.libPickMode = !ui.libPickMode; ui.libPick = [];
+  if (ui.libPickMode) ui.libSel = null;
+  renderLib();
+}
+function togglePick(id) {
+  const i = ui.libPick.indexOf(id);
+  if (i < 0) ui.libPick.push(id); else ui.libPick.splice(i, 1);
+  renderLib();
 }
 let previewSrc = null;
 async function previewSample(id) {
@@ -4007,12 +4057,32 @@ async function updateSample(id, patch) {
   try { await Store.put('samples', meta); } catch (e) { toast(`Couldn’t save that change: ${e.message}`, { kind: 'error' }); }
   renderLib(); if (ui.tab !== 'library') renderView();
 }
-async function deleteSample(id) {
-  try { await Store.del('samples', id); await Store.del('sampleData', id); } catch (e) { toast(e.message, { kind: 'error' }); return; }
-  const name = (lib.get(id) || {}).name; lib.delete(id); buffers.delete(id); reversedBufs.delete(id); ui.libSel = null;
-  if (project.playlist.clips.some(c => c.kind === 'audio' && c.ref === id)) mutate(P => { P.playlist.clips = P.playlist.clips.filter(c => !(c.kind === 'audio' && c.ref === id)); });
+/* Remove one or many sounds in one go: storage first, then any clips that pointed at them. */
+async function deleteSamples(ids) {
+  const gone = new Set();
+  for (const id of ids) {
+    if (!lib.has(id)) continue;
+    try { await Store.del('samples', id); await Store.del('sampleData', id); } catch (e) { toast(e.message, { kind: 'error' }); break; }
+    lib.delete(id); buffers.delete(id); reversedBufs.delete(id); gone.add(id);
+  }
+  if (!gone.size) return 0;
+  if (ui.libSel && gone.has(ui.libSel)) ui.libSel = null;
+  if (ui.previewId && gone.has(ui.previewId)) { ui.previewId = null; if (previewSrc) { try { previewSrc.stop(); } catch (e) { /* ok */ } previewSrc = null; } }
+  if (project.playlist.clips.some(c => c.kind === 'audio' && gone.has(c.ref))) mutate(P => { P.playlist.clips = P.playlist.clips.filter(c => !(c.kind === 'audio' && gone.has(c.ref))); });
   else render();
+  return gone.size;
+}
+async function deleteSample(id) {
+  const name = (lib.get(id) || {}).name;
+  if (!(await deleteSamples([id]))) return;
   renderLib(); toast(`Deleted “${name}”`);
+}
+async function deletePicked() {
+  const ids = ui.libPick.slice();
+  ui.libPick = []; ui.libPickMode = false;
+  const n = await deleteSamples(ids);
+  renderLib();
+  if (n) toast(`Deleted ${n} sound${n === 1 ? '' : 's'}`);
 }
 
 /* ----- plugins ----- */
@@ -4239,11 +4309,24 @@ async function importZip(name, ab, res, progress) {
     if (progress) progress(++i, entries.length);
   }
 }
+/* One import becomes one folder, so a drop of twenty samples doesn't scatter through the list. */
+function importBatchName(files) {
+  const heads = files.map(f => baseName(f.name).replace(/[_\-.]+/g, ' ').trim().split(/\s+/)[0] || '');
+  const first = heads[0].toLowerCase();
+  if (first.length > 1 && heads.every(h => h.toLowerCase() === first)) return heads[0].slice(0, 40);
+  const d = new Date(), pad = n => String(n).padStart(2, '0'), months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${months[d.getMonth()]} ${d.getDate()} ${pad(d.getHours())}.${pad(d.getMinutes())}`;
+}
+function batchFolder(base, files) {
+  const name = importBatchName(files);
+  return (base && base !== 'Imported' ? `${base} / ${name}` : name).slice(0, 60);
+}
 async function importFiles(files) {
   const res = { audio: [], midi: 0, plugins: 0, projects: 0, skipped: 0, errors: [] };
   if (!files.length) return res;
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  const folder = ui.importFolder || 'Imported';
+  const base = ui.importFolder || 'Imported', loose = files.filter(f => AUDIO_EXT.includes(extOf(f.name)) || (f.type || '').startsWith('audio/'));
+  const folder = loose.length > 1 ? batchFolder(base, loose) : base;
   const busy = toast(`Importing ${files.length} file${files.length > 1 ? 's' : ''}…`, { sticky: true, kind: 'busy' });
   let k = 0;
   for (const f of files) {
@@ -4268,7 +4351,7 @@ async function importFiles(files) {
   if (res.plugins) bits.push(`${res.plugins} plugin${res.plugins > 1 ? 's' : ''}`);
   if (res.projects) bits.push('a project');
   if (res.skipped) bits.push(`${res.skipped} already in your library`);
-  if (bits.length) toast(`Imported ${bits.join(', ')}.`, res.audio.length && ui.tab !== 'library' && !isWide() ? { action: { label: 'Open library', run: () => setTab('library') } } : {});
+  if (bits.length) toast(`Imported ${bits.join(', ')}${res.audio.length && folder !== base ? ` into “${folder}”` : ''}.`, res.audio.length && ui.tab !== 'library' && !isWide() ? { action: { label: 'Open library', run: () => setTab('library') } } : {});
   if (res.errors.length) toast(res.errors[0] + (res.errors.length > 1 ? ` (and ${res.errors.length - 1} more)` : ''), { kind: 'error', ms: 8000 });
   if (res.audio.length) { ui.libFolder = 'All'; }
   renderLib(); render();
