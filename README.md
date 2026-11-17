@@ -86,5 +86,9 @@ or `npx electron .` after a build.
   external links going to the browser, and About reporting the packaged version.
 
 It reads `dist/`, so build first: `npm run check` does both. On every push to `main` the
-Windows workflow runs it, packages the app and launches it with `tools/smoke-win.mjs`;
-the NSIS installer is built and uploaded only for a `v*` tag or a manual run.
+Windows workflow runs it, packages the app and launches it with `tools/smoke-win.mjs`.
+That smoke run also covers the file hooks above without a human: it writes two
+`.tapehouse` bundles, starts the app with the first one and checks the name field, then
+starts a second copy with the second bundle and checks that the running window took it
+and the second process quit. The NSIS installer is built and uploaded only for a `v*`
+tag or a manual run.

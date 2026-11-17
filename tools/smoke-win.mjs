@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /* Launches the packaged Windows app and checks what actually renders. Fails on a
    blank page, a console error, any network request, or a missing bundled font.
+   It then does what Explorer does — starts the app with a .tapehouse file, then
+   launches a second copy with another file — to prove the window that is already
+   open takes the project instead of a second app appearing.
+
    Talks to Chromium's DevTools protocol directly, so it needs no extra npm packages
    — just Node 22+, which has fetch and WebSocket built in.
 
    Usage: node tools/smoke-win.mjs [path-to-exe]   (default: out/Tapehouse-win32-x64/Tapehouse.exe) */
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +18,7 @@ import path from 'node:path';
 const exe = path.resolve(process.argv[2] || path.join('out', 'Tapehouse-win32-x64', 'Tapehouse.exe'));
 const START_TIMEOUT = 60_000;
 const LOAD_TIMEOUT = 20_000;
+const HOOK_TIMEOUT = 20_000;
 
 if (!existsSync(exe)) {
   console.error(`smoke: no packaged app at ${exe} — run "npm run pack:win" first.`);
@@ -22,7 +27,88 @@ if (!existsSync(exe)) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-/* Ask for a free port: a shared runner may already own a fixed one. */
+/* ---------- a real .tapehouse file, built the way the app builds one ---------- */
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+const crc32 = buffer => {
+  let c = 0xffffffff;
+  for (const byte of buffer) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+
+/* Stored (uncompressed) ZIP entries. The app reads the central directory, so a
+   plain header, the bytes and the directory are all it takes. */
+function zipStore(files) {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const { name, data } of files) {
+    const nameBytes = Buffer.from(name, 'utf8');
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt32LE(crc32(data), 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    parts.push(local, nameBytes, data);
+
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(20, 4);
+    entry.writeUInt16LE(20, 6);
+    entry.writeUInt16LE(0x0800, 8);
+    entry.writeUInt32LE(crc32(data), 16);
+    entry.writeUInt32LE(data.length, 20);
+    entry.writeUInt32LE(data.length, 24);
+    entry.writeUInt16LE(nameBytes.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    central.push(entry, nameBytes);
+
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const centralSize = central.reduce((n, part) => n + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, ...central, end]);
+}
+
+function writeBundle(dir, name) {
+  const project = {
+    format: 'tapehouse-project',
+    version: 1,
+    id: `smoke-${name.toLowerCase().replace(/\s+/g, '-')}`,
+    name,
+    bpm: 120,
+    swing: 0,
+    key: 9,
+    scale: 'minor',
+    channels: [],
+    patterns: [{ id: 'smoke-pattern', name: 'Pattern 1', length: 16 }],
+    updatedAt: Date.now(),
+  };
+  const manifest = { format: 'tapehouse-bundle', version: 1, project, plugins: [], samples: [] };
+  const file = path.join(dir, `${name}.tapehouse`);
+  writeFileSync(file, zipStore([{ name: 'tapehouse-project.json', data: Buffer.from(JSON.stringify(manifest)) }]));
+  return file;
+}
+
+/* ---------- letting the app run ---------- */
+
 const freePort = () => new Promise((resolve, reject) => {
   const server = net.createServer();
   server.once('error', reject);
@@ -31,30 +117,31 @@ const freePort = () => new Promise((resolve, reject) => {
     server.close(() => resolve(port));
   });
 });
-const port = process.env.SMOKE_PORT ? Number(process.env.SMOKE_PORT) : await freePort();
 
-/* A throwaway profile keeps the run hermetic and leaves a real install's data alone. */
-const profile = path.join(os.tmpdir(), `tapehouse-smoke-${process.pid}`);
-rmSync(profile, { recursive: true, force: true });
-
-console.log(`smoke: launching ${path.basename(exe)} on port ${port}`);
-const app = spawn(exe, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-/* Keep the shell's own output: a failing page often explains itself there. */
-const appLog = [];
-const collect = chunk => {
-  appLog.push(String(chunk));
-  if (appLog.length > 400) appLog.shift();
-  process.stderr.write(chunk);
-};
-app.stdout.on('data', collect);
-app.stderr.on('data', collect);
-
+const scratch = mkdtempSync(path.join(os.tmpdir(), 'tapehouse-smoke-'));
 const problems = [];
 const SHOT = path.resolve('smoke-failure.png');
 const REPORT = path.resolve('smoke-failure.txt');
-let attached = false;
+const apps = [];
 let lastState = null;
+let session = null;
+let loaded = false;
+
+/* The shell's own output: a failing page often explains itself there. */
+const appLog = [];
+const watch = (label, proc) => {
+  const collect = chunk => {
+    appLog.push({ label, text: String(chunk) });
+    if (appLog.length > 400) appLog.shift();
+    process.stderr.write(chunk);
+  };
+  proc.stdout.on('data', collect);
+  proc.stderr.on('data', collect);
+  apps.push(proc);
+  return proc;
+};
+
+const launch = (label, args) => watch(label, spawn(exe, args, { stdio: ['ignore', 'pipe', 'pipe'] }));
 
 /* What the packaged app actually ships, in case the page it asks for is not there. */
 function packageNotes() {
@@ -78,16 +165,17 @@ function packageNotes() {
 /* A blank page is hard to diagnose from a log line, so a failed run leaves the
    window's pixels and a short report behind for the workflow to upload. */
 async function captureFailure() {
-  if (!attached) return;
-  try {
-    const shot = await Promise.race([
-      send('Page.captureScreenshot', { format: 'png' }),
-      sleep(5000).then(() => { throw new Error('timed out'); }),
-    ]);
-    writeFileSync(SHOT, Buffer.from(shot.data, 'base64'));
-    console.log(`smoke: screenshot saved to ${SHOT}`);
-  } catch (err) {
-    console.error(`smoke: could not capture a screenshot (${err.message})`);
+  if (session) {
+    try {
+      const shot = await Promise.race([
+        session.send('Page.captureScreenshot', { format: 'png' }),
+        sleep(5000).then(() => { throw new Error('timed out'); }),
+      ]);
+      writeFileSync(SHOT, Buffer.from(shot.data, 'base64'));
+      console.log(`smoke: screenshot saved to ${SHOT}`);
+    } catch (err) {
+      console.error(`smoke: could not capture a screenshot (${err.message})`);
+    }
   }
   try {
     const lines = [
@@ -98,7 +186,7 @@ async function captureFailure() {
       ...(problems.length ? problems : ['(no captured messages)']),
       '',
       'app output:',
-      ...(appLog.length ? appLog.join('').trim().split('\n').slice(-15) : ['(none)']),
+      ...(appLog.length ? appLog.slice(-40).map(part => `${part.label}: ${part.text.trim()}`) : ['(none)']),
       '',
       'package:',
       ...packageNotes(),
@@ -108,6 +196,19 @@ async function captureFailure() {
   } catch (err) {
     console.error(`smoke: could not write the report (${err.message})`);
   }
+}
+
+const alive = proc => proc.exitCode === null && proc.signalCode === null;
+
+async function closeApp(proc) {
+  if (!proc || !alive(proc)) return;
+  if (process.platform === 'win32') {
+    const kill = spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
+    await new Promise(resolve => kill.once('exit', resolve));
+  } else {
+    proc.kill();
+  }
+  await Promise.race([new Promise(resolve => proc.once('exit', resolve)), sleep(5000)]);
 }
 
 async function stop(code, message) {
@@ -120,97 +221,85 @@ async function stop(code, message) {
     }
   }
   if (code !== 0) await captureFailure();
-  if (app.exitCode === null && app.signalCode === null) {
-    if (process.platform === 'win32') {
-      const kill = spawn('taskkill', ['/pid', String(app.pid), '/T', '/F'], { stdio: 'ignore' });
-      await new Promise(resolve => kill.once('exit', resolve));
-    } else {
-      app.kill();
-    }
-    await Promise.race([new Promise(resolve => app.once('exit', resolve)), sleep(5000)]);
-  }
-  rmSync(profile, { recursive: true, force: true });
+  if (session) { try { session.socket.close(); } catch { /* already gone */ } }
+  for (const proc of apps) await closeApp(proc);
+  rmSync(scratch, { recursive: true, force: true });
   process.exit(code);
 }
 
-/* 1. Wait for the shell to publish a page target for the app:// origin. */
-let target = null;
-const startedAt = Date.now();
-while (!target) {
-  if (app.exitCode !== null) await stop(1, `the app exited with code ${app.exitCode} before it opened a page`);
-  if (Date.now() - startedAt > START_TIMEOUT) await stop(1, 'the app never exposed a DevTools page');
-  try {
-    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    target = list.find(entry => entry.type === 'page' && String(entry.url).startsWith('app://'));
-  } catch { /* the DevTools endpoint is not up yet */ }
-  if (!target) await sleep(500);
-}
+/* ---------- the DevTools side ---------- */
 
-/* 2. Watch the page: console errors, exceptions, failed loads, network use. */
-const socket = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((resolve, reject) => {
-  socket.addEventListener('open', resolve, { once: true });
-  socket.addEventListener('error', () => reject(new Error('could not attach to the DevTools socket')), { once: true });
-});
-attached = true;
+const pages = async port => {
+  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+  return list.filter(entry => entry.type === 'page' && String(entry.url).startsWith('app://'));
+};
+
+async function waitForPage(port) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < START_TIMEOUT) {
+    try {
+      const [page] = await pages(port);
+      if (page) return page;
+    } catch { /* the DevTools endpoint is not up yet */ }
+    await sleep(300);
+  }
+  return null;
+}
 
 // Chromium asks for a favicon nobody ships; that is not a reason to fail a build.
 const benign = text => /favicon\.ico/i.test(text);
-let loaded = false;
-let nextId = 1;
-const pending = new Map();
 
-socket.addEventListener('message', event => {
-  const message = JSON.parse(event.data);
-  if (message.id && pending.has(message.id)) {
-    const { resolve, reject } = pending.get(message.id);
-    pending.delete(message.id);
-    if (message.error) reject(new Error(`${message.error.message} (${message.error.code})`));
-    else resolve(message.result);
-    return;
-  }
-  const { method, params } = message;
-  if (method === 'Page.loadEventFired') loaded = true;
-  if (method === 'Runtime.consoleAPICalled' && ['error', 'assert'].includes(params.type)) {
-    const text = params.args.map(a => a.value ?? a.description ?? '').join(' ');
-    if (!benign(text)) problems.push(`console.${params.type}: ${text}`);
-  }
-  if (method === 'Runtime.exceptionThrown') {
-    const text = params.exceptionDetails.exception?.description || params.exceptionDetails.text;
-    if (!benign(text)) problems.push(`exception: ${text}`);
-  }
-  if (method === 'Log.entryAdded' && params.entry.level === 'error') {
-    const text = `${params.entry.text}${params.entry.url ? ` (${params.entry.url})` : ''}`;
-    if (!benign(text)) problems.push(`log: ${text}`);
-  }
-  if (method === 'Network.requestWillBeSent' && /^https?:/i.test(params.request.url)) {
-    problems.push(`network: ${params.request.url}`);
-  }
-});
+function connect(target) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    const pending = new Map();
+    let nextId = 1;
 
-const send = (method, params = {}) => new Promise((resolve, reject) => {
-  const id = nextId++;
-  pending.set(id, { resolve, reject });
-  socket.send(JSON.stringify({ id, method, params }));
-});
+    const send = (method, params = {}) => new Promise((res, rej) => {
+      const id = nextId++;
+      pending.set(id, { resolve: res, reject: rej });
+      socket.send(JSON.stringify({ id, method, params }));
+    });
 
-const evaluate = async expression => {
-  const { result, exceptionDetails } = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (exceptionDetails) throw new Error(exceptionDetails.exception?.description || exceptionDetails.text);
-  return result.value;
-};
+    const evaluate = async expression => {
+      const { result, exceptionDetails } = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+      if (exceptionDetails) throw new Error(exceptionDetails.exception?.description || exceptionDetails.text);
+      return result.value;
+    };
 
-await Promise.all(['Page.enable', 'Runtime.enable', 'Log.enable', 'Network.enable'].map(method => send(method)));
+    socket.addEventListener('error', () => reject(new Error('could not attach to the DevTools socket')), { once: true });
+    socket.addEventListener('open', () => resolve({ socket, send, evaluate }), { once: true });
+    socket.addEventListener('message', event => {
+      const message = JSON.parse(event.data);
+      if (message.id && pending.has(message.id)) {
+        const { resolve: done, reject: fail } = pending.get(message.id);
+        pending.delete(message.id);
+        if (message.error) fail(new Error(`${message.error.message} (${message.error.code})`));
+        else done(message.result);
+        return;
+      }
+      const { method, params } = message;
+      if (method === 'Page.loadEventFired') loaded = true;
+      if (method === 'Runtime.consoleAPICalled' && ['error', 'assert'].includes(params.type)) {
+        const text = params.args.map(a => a.value ?? a.description ?? '').join(' ');
+        if (!benign(text)) problems.push(`console.${params.type}: ${text}`);
+      }
+      if (method === 'Runtime.exceptionThrown') {
+        const text = params.exceptionDetails.exception?.description || params.exceptionDetails.text;
+        if (!benign(text)) problems.push(`exception: ${text}`);
+      }
+      if (method === 'Log.entryAdded' && params.entry.level === 'error') {
+        const text = `${params.entry.text}${params.entry.url ? ` (${params.entry.url})` : ''}`;
+        if (!benign(text)) problems.push(`log: ${text}`);
+      }
+      if (method === 'Network.requestWillBeSent' && /^https?:/i.test(params.request.url)) {
+        problems.push(`network: ${params.request.url}`);
+      }
+    });
+  });
+}
 
-/* 3. Reload with the listeners attached, so startup errors and early requests are seen. */
-await send('Page.reload', { ignoreCache: true });
-const reloadAt = Date.now();
-while (!loaded && Date.now() - reloadAt < LOAD_TIMEOUT) await sleep(200);
-if (!loaded) await stop(1, 'the page never finished loading');
-
-await sleep(1000); // let the app paint and any late requests fire
-
-const state = await evaluate(`(() => ({
+const readPage = () => session.evaluate(`(() => ({
   title: document.title,
   elements: document.body.querySelectorAll('*').length,
   text: document.body.innerText.trim().length,
@@ -218,12 +307,51 @@ const state = await evaluate(`(() => ({
   // The controls a working studio shows; a blank page cannot fake them.
   controls: ['#playBtn', '#stopBtn', '#bpm', '#projName', '#importBtn', '#app']
     .filter(sel => document.querySelector(sel)).length,
+  project: (document.getElementById('projName') || {}).value || '',
 }))()`);
-const fonts = await evaluate(`Promise.all([
+
+const readFonts = () => session.evaluate(`Promise.all([
   document.fonts.load('16px Michroma'),
   document.fonts.load('16px "IBM Plex Mono"'),
 ]).then(([display, mono]) => ({ display: display.length > 0, mono: mono.length > 0 }))`);
 
+async function expectProject(name) {
+  const startedAt = Date.now();
+  let seen = '';
+  while (Date.now() - startedAt < HOOK_TIMEOUT) {
+    seen = await session.evaluate(`(document.getElementById('projName') || {}).value || ''`);
+    if (seen === name) return;
+    await sleep(250);
+  }
+  await stop(1, `the window shows "${seen}" instead of "${name}"`);
+}
+
+/* ---------- 1. the page itself ---------- */
+
+const pagePort = await freePort();
+const pageProfile = path.join(scratch, 'page');
+console.log(`smoke: launching ${path.basename(exe)} on port ${pagePort}`);
+const pageApp = launch('page', [`--remote-debugging-port=${pagePort}`, `--user-data-dir=${pageProfile}`]);
+
+const pageTarget = await waitForPage(pagePort);
+if (!pageTarget) {
+  const why = alive(pageApp) ? 'the app never exposed a DevTools page' : `the app exited with code ${pageApp.exitCode} before it opened a page`;
+  await stop(1, why);
+}
+
+session = await connect(pageTarget);
+await Promise.all(['Page.enable', 'Runtime.enable', 'Log.enable', 'Network.enable'].map(method => session.send(method)));
+
+/* Reload with the listeners attached, so startup errors and early requests are seen. */
+loaded = false;
+await session.send('Page.reload', { ignoreCache: true });
+const reloadAt = Date.now();
+while (!loaded && Date.now() - reloadAt < LOAD_TIMEOUT) await sleep(200);
+if (!loaded) await stop(1, 'the page never finished loading');
+await sleep(1000); // let the app paint and any late requests fire
+
+const state = await readPage();
+const fonts = await readFonts();
 lastState = { title: state.title, state, fonts };
 console.log(`smoke: ${state.title || '(no title)'} — ${state.elements} elements, ${state.text} chars of text, ${state.controls}/6 controls`);
 
@@ -232,6 +360,49 @@ if (state.controls < 6 || state.text < 100 || state.elements < 50) {
 }
 if (!state.fontsTag) problems.push('fonts: the page has no #th-fonts block');
 if (!fonts.display || !fonts.mono) problems.push(`fonts: not loaded (Michroma ${fonts.display}, IBM Plex Mono ${fonts.mono})`);
+if (problems.length) await stop(1, `${problems.length} problem(s):\n  ${problems.join('\n  ')}`);
+
+session.socket.close();
+session = null;
+await closeApp(pageApp);
+console.log('smoke: page ok');
+
+/* ---------- 2. starting with a project on the command line ---------- */
+
+const first = writeBundle(scratch, 'Smoke Alpha');
+const second = writeBundle(scratch, 'Smoke Beta');
+const hookPort = await freePort();
+const hookProfile = path.join(scratch, 'hooks');
+console.log(`smoke: opening ${path.basename(first)} on launch`);
+const hookApp = launch('first launch', [`--remote-debugging-port=${hookPort}`, `--user-data-dir=${hookProfile}`, first]);
+
+const hookTarget = await waitForPage(hookPort);
+if (!hookTarget) {
+  const why = alive(hookApp) ? 'the app never exposed a DevTools page' : `the app exited with code ${hookApp.exitCode} when given a project`;
+  await stop(1, why);
+}
+session = await connect(hookTarget);
+await Promise.all(['Page.enable', 'Runtime.enable', 'Log.enable', 'Network.enable'].map(method => session.send(method)));
+await expectProject('Smoke Alpha');
+console.log('smoke: the project on the command line opened on launch');
+
+/* ---------- 3. Explorer double-clicking a second file ---------- */
+
+const before = await pages(hookPort);
+console.log(`smoke: launching a second copy with ${path.basename(second)}`);
+const secondApp = launch('second launch', [`--user-data-dir=${hookProfile}`, second]);
+await expectProject('Smoke Beta');
+
+const after = await pages(hookPort);
+if (!alive(hookApp)) await stop(1, 'the first app exited instead of keeping its window');
+if (after.length !== 1) await stop(1, `the second launch left ${after.length} app windows instead of one`);
+if (after[0].id !== before[0].id) await stop(1, 'the second launch replaced the window instead of reusing it');
+const secondExit = !alive(secondApp) ? secondApp.exitCode : await Promise.race([
+  new Promise(resolve => secondApp.once('exit', code => resolve(code))),
+  sleep(10_000).then(() => 'still running'),
+]);
+if (secondExit !== 0) await stop(1, `the second launch ended with ${secondExit} instead of handing the project over and quitting`);
+console.log('smoke: the second launch handed its project to the running window');
 
 if (problems.length) await stop(1, `${problems.length} problem(s):\n  ${problems.join('\n  ')}`);
 
