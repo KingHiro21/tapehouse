@@ -31,25 +31,27 @@ function check(label, ok, detail) {
   }
 }
 
-/* The portable profile rule (electron/profile.js), tested on a real directory. */
+/* The portable profile rule (electron/profile.js), tested on real directories. */
 {
   const { portableDataDir } = require('../electron/profile');
   const os = require('node:os');
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapehouse-profile-'));
-  check('installed app keeps the normal profile', portableDataDir(tempRoot) === null);
 
-  fs.writeFileSync(path.join(tempRoot, 'portable.txt'), '');
-  const dataDir = portableDataDir(tempRoot);
+  const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'tapehouse-installed-'));
+  check('installed app keeps the normal profile', portableDataDir(plain) === null);
+
+  const portable = fs.mkdtempSync(path.join(os.tmpdir(), 'tapehouse-portable-'));
+  fs.writeFileSync(path.join(portable, 'portable.txt'), '');
+  const dataDir = portableDataDir(portable);
   check('portable copy keeps its data beside the exe',
-    dataDir === path.join(tempRoot, 'data') && fs.existsSync(dataDir), dataDir);
+    dataDir === path.join(portable, 'data') && fs.existsSync(dataDir), dataDir);
 
-  const readOnly = {
-    existsSync: () => true,
-    mkdirSync() { throw new Error('read-only media'); },
-    accessSync() {},
-  };
-  check('read-only media falls back instead of crashing', portableDataDir(tempRoot, readOnly) === null);
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  // Media that cannot hold the folder is modelled by a file sitting where it goes.
+  const blocked = fs.mkdtempSync(path.join(os.tmpdir(), 'tapehouse-blocked-'));
+  fs.writeFileSync(path.join(blocked, 'portable.txt'), '');
+  fs.writeFileSync(path.join(blocked, 'data'), 'not a folder');
+  check('an unusable data folder falls back instead of crashing', portableDataDir(blocked) === null);
+
+  for (const dir of [plain, portable, blocked]) fs.rmSync(dir, { recursive: true, force: true });
 }
 
 async function run() {

@@ -15,10 +15,7 @@ const APP_ORIGIN = 'app://tapehouse';
 // data folder next to it, so the folder can be copied to another PC with its work.
 // An explicit --user-data-dir wins; the smoke test relies on that for a throwaway run.
 const portableDir = process.argv.some(arg => arg.startsWith('--user-data-dir')) ? null : portableDataDir();
-if (portableDir) {
-  app.setPath('userData', portableDir);
-  app.setPath('sessionData', portableDir);
-}
+if (portableDir) app.setPath('userData', portableDir);
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true } }]);
 

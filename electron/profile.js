@@ -6,21 +6,18 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const MARKER = 'portable.txt';
-const ATTACHED = 'data';
-
-function portableDataDir(exeDir = path.dirname(process.execPath), io = fs) {
-  if (!io.existsSync(path.join(exeDir, MARKER))) return null;
-  const dir = path.join(exeDir, ATTACHED);
+function portableDataDir(exeDir = path.dirname(process.execPath)) {
+  if (!fs.existsSync(path.join(exeDir, 'portable.txt'))) return null;
+  const dir = path.join(exeDir, 'data');
   try {
-    io.mkdirSync(dir, { recursive: true });
-    io.accessSync(dir, fs.constants.W_OK);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
     return dir;
   } catch {
     // Read-only media (a locked USB stick, a Program Files folder): keep the app
-    // usable by falling back to the normal profile rather than refusing to start.
+    // usable on the normal profile rather than refusing to start.
     return null;
   }
 }
 
-module.exports = { portableDataDir, MARKER, ATTACHED };
+module.exports = { portableDataDir };
