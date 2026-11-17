@@ -262,6 +262,10 @@ function addAudioClip(id, track = null, start = null) {
   if (track == null) track = firstFreeTrack(start, len);
   mutate(P => {
     while (track >= P.playlist.tracks.length) P.playlist.tracks.push(newTrack(P.playlist.tracks.length));
+    const tr = P.playlist.tracks[track], named = String(s.name || '').trim().slice(0, 24);
+    // A lane still wearing its generated name takes the name of the sample that
+    // lands on it, the way a fresh mixer insert takes its channel's name.
+    if (named && tr.name === newTrack(track).name) tr.name = named;
     const c = { id: uid(), kind: 'audio', ref: id, track, start, len, gain: 1, offset: 0 };
     P.playlist.clips.push(c); ui.plSel = c.id;
   });

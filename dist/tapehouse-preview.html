@@ -2991,6 +2991,10 @@ function addAudioClip(id, track = null, start = null) {
   if (track == null) track = firstFreeTrack(start, len);
   mutate(P => {
     while (track >= P.playlist.tracks.length) P.playlist.tracks.push(newTrack(P.playlist.tracks.length));
+    const tr = P.playlist.tracks[track], named = String(s.name || '').trim().slice(0, 24);
+    // A lane still wearing its generated name takes the name of the sample that
+    // lands on it, the way a fresh mixer insert takes its channel's name.
+    if (named && tr.name === newTrack(track).name) tr.name = named;
     const c = { id: uid(), kind: 'audio', ref: id, track, start, len, gain: 1, offset: 0 };
     P.playlist.clips.push(c); ui.plSel = c.id;
   });
@@ -4521,7 +4525,13 @@ function bindChrome() {
   // A project double-clicked in Explorer (or dropped on Tapehouse.exe) reaches us
   // from the shell; hand it to the same importer that handles a dropped file.
   if (window.tapehouse && window.tapehouse.onOpenProject) {
-    window.tapehouse.onOpenProject(({ name, bytes }) => importFiles([new File([bytes], name)]));
+    // Two files can arrive together when Explorer hands a second one over while
+    // the first is still opening; run them in order so the last one wins.
+    let opening = Promise.resolve();
+    window.tapehouse.onOpenProject(({ name, bytes }) => {
+      const take = () => importFiles([new File([bytes], name)]);
+      opening = opening.then(take, take);
+    });
   }
   $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
   const unlock = () => { if (!ctx || ctx.state !== 'running' || !unlockTried) ensureCtx(); };
