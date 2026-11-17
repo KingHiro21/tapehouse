@@ -18,6 +18,20 @@ jobs:
       - run: npm ci
       - run: npm run check
 
+  smoke:
+    name: launch the packaged app
+    runs-on: windows-latest
+    needs: check-shell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run pack:win
+      - run: node tools/smoke-win.mjs
+
   installer:
     name: build NSIS installer
     runs-on: windows-latest

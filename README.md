@@ -30,8 +30,9 @@ on Windows — so build it on Windows, or on Linux/macOS with Wine installed.
 Needs Node 18+. `npm run build` (or `./build.sh`) still just writes `dist/`.
 
 How the shell works: `electron/main.js` serves `dist/Tapehouse.html` from a secure
-`app://` origin, so the AudioWorklet engine, the mic, storage and Google Fonts behave
-as they do in Chrome. WAV bounces, project bundles and library backups use the normal
+`app://` origin, so the AudioWorklet engine, the mic and storage behave as they do in
+Chrome. The fonts are inlined into the page (`tools/fetch-fonts.mjs` refreshes them from
+`src/fonts/`), so the app needs no network to look right. WAV bounces, project bundles and library backups use the normal
 Windows Save dialog. Your projects, samples and plugins live in the app's own profile
 (`%APPDATA%\Tapehouse`), separate from any browser copy of the page.
 

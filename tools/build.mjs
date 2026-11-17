@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /* Assembles src/ into dist/, the same output build.sh produces, without needing bash.
    dist/tapehouse.html  — the page for claude.ai (mic does not work in a preview)
-   dist/Tapehouse.html  — the standalone edition (mic works); this is what the Windows app loads */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+   dist/Tapehouse.html  — the standalone edition (mic works); this is what the Windows app loads
+   Fonts come from src/fonts and are inlined, so the page needs no network. */
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,19 +11,34 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = name => readFile(path.join(root, 'src', name), 'utf8');
 
 const PARTS = ['engine', 'vocal', 'app', 'plus', 'studio', 'listen', 'suite', 'create'];
-const FONTS = 'https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap';
+const FONT_DIR = path.join(root, 'src', 'fonts');
 
-const [css, body, ...scripts] = await Promise.all([
+const [css, body, fontCss, ...scripts] = await Promise.all([
   read('style.css'),
   read('body.html'),
+  read('fonts/fonts.css'),
   ...PARTS.map(part => read(`${part}.js`)),
 ]);
+
+// Turn each url(./x.woff2) in src/fonts/fonts.css into a data: URI, so the page
+// carries the fonts and has nothing to fetch at runtime.
+const fontFileNames = (await readdir(FONT_DIR)).filter(file => file.endsWith('.woff2'));
+const fontBytes = new Map(await Promise.all(fontFileNames.map(async file => [
+  file,
+  (await readFile(path.join(FONT_DIR, file))).toString('base64'),
+])));
+const inlineFonts = fontCss.replace(/url\(\.\/([^)]+)\)/g, (match, file) => {
+  const base64 = fontBytes.get(file);
+  if (!base64) throw new Error(`src/fonts/fonts.css points at a missing file: ${file}`);
+  return `url(data:font/woff2;base64,${base64})`;
+});
 
 const fragment = [
   '<title>Tapehouse</title>',
   '<meta name="claude:viewport-fit-sides" content="cover">',
-  '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
-  `<link rel="stylesheet" href="${FONTS}">`,
+  '<style id="th-fonts">',
+  inlineFonts,
+  '</style>',
   '<style id="th-style">',
 ].join('\n') + '\n'
   + css
@@ -39,4 +55,4 @@ const page = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta n
 await mkdir(path.join(root, 'dist'), { recursive: true });
 await writeFile(path.join(root, 'dist', 'tapehouse.html'), fragment);
 await writeFile(path.join(root, 'dist', 'Tapehouse.html'), page);
-console.log('built dist/tapehouse.html and dist/Tapehouse.html');
+console.log(`built dist/tapehouse.html and dist/Tapehouse.html (${fontBytes.size} fonts inlined)`);

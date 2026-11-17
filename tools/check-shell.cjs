@@ -56,6 +56,11 @@ async function run() {
       String(page.headers.get('content-type')).startsWith('text/html'), `status ${page.status}`);
     check('page is the built app', html.includes('id="th-app"') && html.includes('const APP_VERSION'),
       `${html.length} bytes`);
+    const built = fs.readFileSync(path.join(__dirname, '..', 'dist', 'Tapehouse.html'), 'utf8');
+    check('fonts are bundled, not fetched',
+      !/fonts\.googleapis|fonts\.gstatic/.test(built) && built.includes('id="th-fonts"') && built.includes('data:font/woff2'),
+      'the built page still references a font host');
+
     check('/ serves Tapehouse.html', (await serve(new Request('app://tapehouse/'))).status === 200);
     check('missing file is 404', (await serve(new Request('app://tapehouse/nope.css'))).status === 404);
     check('path traversal is 404', (await serve(new Request('app://tapehouse/../package.json'))).status === 404);

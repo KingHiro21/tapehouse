@@ -1575,11 +1575,16 @@ function browserDownloads() {
     }
   } };
 }
+/* The built page carries its fonts inline; an exported copy gets the same bytes, so it works offline too. */
+function fontStyles() {
+  const tag = document.getElementById('th-fonts');
+  return tag && tag.textContent ? `<style id="th-fonts">${tag.textContent}</style>` : '';
+}
 /* The whole app as one .html file, for recording outside claude.ai (which doesn't pass the mic to pages). */
 function standaloneHtml() {
-  const P = PAGE_PARTS, fonts = 'https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap';
+  const P = PAGE_PARTS;
   return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Tapehouse</title>'
-    + `<link rel="stylesheet" href="${fonts}"><style>html,body{margin:0}</style><style id="th-style">${P.css}</style></head><body>${P.markup}<script id="th-app">${P.js}<` + '/script></body></html>';
+    + `${fontStyles()}<style>html,body{margin:0}</style><style id="th-style">${P.css}</style></head><body>${P.markup}<script id="th-app">${P.js}<` + '/script></body></html>';
 }
 async function getRecordingEdition() {
   if (!PAGE_PARTS) { toast('Couldn’t package the app from this view.', { kind: 'error' }); return; }
