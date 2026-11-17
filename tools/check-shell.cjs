@@ -31,6 +31,27 @@ function check(label, ok, detail) {
   }
 }
 
+/* The portable profile rule (electron/profile.js), tested on a real directory. */
+{
+  const { portableDataDir } = require('../electron/profile');
+  const os = require('node:os');
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapehouse-profile-'));
+  check('installed app keeps the normal profile', portableDataDir(tempRoot) === null);
+
+  fs.writeFileSync(path.join(tempRoot, 'portable.txt'), '');
+  const dataDir = portableDataDir(tempRoot);
+  check('portable copy keeps its data beside the exe',
+    dataDir === path.join(tempRoot, 'data') && fs.existsSync(dataDir), dataDir);
+
+  const readOnly = {
+    existsSync: () => true,
+    mkdirSync() { throw new Error('read-only media'); },
+    accessSync() {},
+  };
+  check('read-only media falls back instead of crashing', portableDataDir(tempRoot, readOnly) === null);
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+}
+
 async function run() {
   const app = electron.app;
   await app.whenReady();
@@ -46,6 +67,8 @@ async function run() {
     JSON.stringify(calls.switches));
 
   check('single instance lock taken, app not quit', calls.quit === false);
+  check('a dev run keeps the normal profile', Object.keys(calls.overriddenPaths).length === 0,
+    JSON.stringify(calls.overriddenPaths));
 
   const serve = calls.protocolHandlers.app;
   check('app:// protocol handler registered', typeof serve === 'function');

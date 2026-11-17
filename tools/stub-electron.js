@@ -18,6 +18,7 @@ const calls = {
   externalUrls: [],
   loadedUrls: [],
   appEvents: {},
+  overriddenPaths: {},
   downloadHandler: null,
   saveDialogs: [],
   saveDialogResult: { canceled: false, filePath: '/sessions/Tapehouse Bounce.wav' },
@@ -61,6 +62,7 @@ class BrowserWindow {
 
 const app = {
   getPath(name) { calls.paths = { ...(calls.paths || {}), [name]: '/downloads' }; return '/downloads'; },
+  setPath(name, value) { calls.overriddenPaths[name] = value; },
   // main.js calls app.commandLine.appendSwitch, as real Electron does.
   commandLine: {
     appendSwitch(name, value) { calls.switches.push({ name, value }); },

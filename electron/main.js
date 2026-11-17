@@ -6,9 +6,19 @@
 const { app, BrowserWindow, Menu, dialog, protocol, session, shell } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { portableDataDir } = require('./profile');
 
 const WEB_DIR = path.join(__dirname, '..', 'dist');
 const APP_ORIGIN = 'app://tapehouse';
+
+// A portable copy carries portable.txt beside the exe and keeps its projects in a
+// data folder next to it, so the folder can be copied to another PC with its work.
+// An explicit --user-data-dir wins; the smoke test relies on that for a throwaway run.
+const portableDir = process.argv.some(arg => arg.startsWith('--user-data-dir')) ? null : portableDataDir();
+if (portableDir) {
+  app.setPath('userData', portableDir);
+  app.setPath('sessionData', portableDir);
+}
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true } }]);
 
