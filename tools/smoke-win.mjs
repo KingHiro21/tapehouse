@@ -215,6 +215,9 @@ const state = await evaluate(`(() => ({
   elements: document.body.querySelectorAll('*').length,
   text: document.body.innerText.trim().length,
   fontsTag: !!document.getElementById('th-fonts'),
+  // The controls a working studio shows; a blank page cannot fake them.
+  controls: ['#playBtn', '#stopBtn', '#bpm', '#projName', '#importBtn', '#app']
+    .filter(sel => document.querySelector(sel)).length,
 }))()`);
 const fonts = await evaluate(`Promise.all([
   document.fonts.load('16px Michroma'),
@@ -222,9 +225,11 @@ const fonts = await evaluate(`Promise.all([
 ]).then(([display, mono]) => ({ display: display.length > 0, mono: mono.length > 0 }))`);
 
 lastState = { title: state.title, state, fonts };
-console.log(`smoke: ${state.title || '(no title)'} — ${state.elements} elements, ${state.text} chars of text`);
+console.log(`smoke: ${state.title || '(no title)'} — ${state.elements} elements, ${state.text} chars of text, ${state.controls}/6 controls`);
 
-if (state.elements < 200 || state.text < 200) await stop(1, `the page looks blank (${state.elements} elements, ${state.text} chars)`);
+if (state.controls < 6 || state.text < 100 || state.elements < 50) {
+  await stop(1, `the page looks blank (${state.elements} elements, ${state.text} chars, ${state.controls}/6 controls)`);
+}
 if (!state.fontsTag) problems.push('fonts: the page has no #th-fonts block');
 if (!fonts.display || !fonts.mono) problems.push(`fonts: not loaded (Michroma ${fonts.display}, IBM Plex Mono ${fonts.mono})`);
 
