@@ -407,4 +407,8 @@ console.log('smoke: the second launch handed its project to the running window')
 if (problems.length) await stop(1, `${problems.length} problem(s):\n  ${problems.join('\n  ')}`);
 
 console.log('smoke ok');
+// One annotation per green run, so the file hooks are visible without the job log.
+if (process.env.GITHUB_ACTIONS) {
+  console.log('::notice title=smoke::page rendered | opened "Smoke Alpha" from the command line | a second launch handed "Smoke Beta" to the running window');
+}
 await stop(0, null);
