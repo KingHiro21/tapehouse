@@ -38,7 +38,17 @@ const profile = path.join(os.tmpdir(), `tapehouse-smoke-${process.pid}`);
 rmSync(profile, { recursive: true, force: true });
 
 console.log(`smoke: launching ${path.basename(exe)} on port ${port}`);
-const app = spawn(exe, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`], { stdio: 'inherit' });
+const app = spawn(exe, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+/* Keep the shell's own output: a failing page often explains itself there. */
+const appLog = [];
+const collect = chunk => {
+  appLog.push(String(chunk));
+  if (appLog.length > 400) appLog.shift();
+  process.stderr.write(chunk);
+};
+app.stdout.on('data', collect);
+app.stderr.on('data', collect);
 
 const problems = [];
 const SHOT = path.resolve('smoke-failure.png');
@@ -67,6 +77,9 @@ async function captureFailure() {
       `fonts: ${lastState ? JSON.stringify(lastState.fonts) : '(not checked)'}`,
       '',
       ...(problems.length ? problems : ['(no captured messages)']),
+      '',
+      'app output:',
+      ...(appLog.length ? appLog.join('').trim().split('\n').slice(-15) : ['(none)']),
     ];
     writeFileSync(REPORT, lines.join('\n') + '\n');
     console.log(`smoke: report saved to ${REPORT}`);

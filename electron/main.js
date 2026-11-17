@@ -83,6 +83,8 @@ function serveApp() {
       const data = await fs.readFile(file);
       return new Response(data, { headers: { 'content-type': TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream' } });
     } catch (e) {
+      // A packaged build must say which file it could not reach.
+      console.error(`app: could not serve ${file} (${e.code || e.message})`);
       return new Response('Not found', { status: 404 });
     }
   });

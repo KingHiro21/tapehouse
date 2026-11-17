@@ -21,7 +21,7 @@ const [appDir] = await packager({
   appCopyright: 'Tapehouse',
   icon: path.join(root, 'build', 'icon.ico'),
   // Only the shell and the built page travel with the app.
-  ignore: [/^\/?(build|src|tools|artifacts|out|node_modules|package-lock\.json|build\.sh|\.gitignore|README\.md)(\/|$)/],
+  ignore: [/^\/?(build|src|tools|artifacts|out|release|node_modules|package-lock\.json|build\.sh|\.gitignore|README\.md)(\/|$)/],
   quiet: true,
 });
 
