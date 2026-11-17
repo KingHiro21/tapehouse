@@ -40,6 +40,23 @@ Projects save as `.tapehouse` bundles. The installer registers that extension, s
 double-clicking one opens it; a file dropped onto `Tapehouse.exe` (or passed to a
 second launch of an open app) opens in the window that is already running.
 
+### After installing, check the file hooks
+
+Save a project first (`File` → `Save project bundle`), then try the three ways in:
+
+1. **Double-click** the `.tapehouse` file in Explorer. Tapehouse starts and the
+   project's name shows in the title bar — not just an empty Untitled session.
+2. With Tapehouse already open on another project, **double-click a second**
+   `.tapehouse` file. The open window comes to the front and switches to it; no
+   second Tapehouse appears in the taskbar.
+3. **Drag** a `.tapehouse` file onto `Tapehouse.exe` (portable folder) and onto a
+   shortcut to the installed app. Same result: it opens in the running window.
+
+If Explorer asks which app to use, pick *Tapehouse* and tick “Always use this app” —
+an older install can leave a stale choice behind. If nothing happens at all, check that
+`HKEY_CLASSES_ROOT\.tapehouse` names a ProgID whose `shell\open\command` runs
+`Tapehouse.exe "%1"`; the installer writes that, a portable folder cannot.
+
 How the shell works: `electron/main.js` serves `dist/Tapehouse.html` from a secure
 `app://` origin, so the AudioWorklet engine, the mic and storage behave as they do in
 Chrome. The fonts are inlined into the page (`tools/fetch-fonts.mjs` refreshes them from
@@ -65,5 +82,6 @@ or `npx electron .` after a build.
 - The View/Help menu, the 1100×640 minimum, sandboxed `webPreferences`, show-on-ready,
   external links going to the browser, and About reporting the packaged version.
 
-It reads `dist/`, so build first: `npm run check` does both. The Windows workflow runs it
-before building the installer.
+It reads `dist/`, so build first: `npm run check` does both. On every push to `main` the
+Windows workflow runs it, packages the app and launches it with `tools/smoke-win.mjs`;
+the NSIS installer is built and uploaded only for a `v*` tag or a manual run.
