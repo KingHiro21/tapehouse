@@ -6,14 +6,15 @@
    open takes the project instead of a second app appearing. The last phase does
    the same while the first copy is still starting, when there is no window yet. A
    last phase hands over a .tapehouse the app cannot read and checks the open
-   project survives it.
+   project survives it; a final one runs a copied folder as a portable build and
+   checks its data lands beside the exe.
 
    Talks to Chromium's DevTools protocol directly, so it needs no extra npm packages
    — just Node 22+, which has fetch, WebSocket and zlib.crc32 built in.
 
    Usage: node tools/smoke-win.mjs [path-to-exe]   (default: out/Tapehouse-win32-x64/Tapehouse.exe) */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -137,7 +138,10 @@ const watch = (label, proc) => {
   return proc;
 };
 
-const launch = (label, args) => watch(label, spawn(exe, args, { stdio: ['ignore', 'pipe', 'pipe'] }));
+const launch = (label, args, o = {}) => watch(label, spawn(o.exe || exe, args, {
+  stdio: ['ignore', 'pipe', 'pipe'],
+  ...(o.env ? { env: { ...process.env, ...o.env } } : {}),
+}));
 
 /* What the packaged app actually ships, in case the page it asks for is not there.
    The shell names the file it could not serve in its own output, above. */
@@ -214,7 +218,10 @@ async function stop(code, message) {
   if (code !== 0) await captureFailure();
   if (session) { try { session.socket.close(); } catch { /* already gone */ } }
   for (const proc of apps) await closeApp(proc);
-  rmSync(scratch, { recursive: true, force: true });
+  // The portable phase copies a whole app folder in here; a file the OS still
+  // holds open must not turn a finished run into a crash.
+  try { rmSync(scratch, { recursive: true, force: true }); }
+  catch (e) { console.error(`smoke: could not remove ${scratch} (${e.code || e.message})`); }
   process.exit(code);
 }
 
@@ -449,11 +456,48 @@ const brokenExit = await waitForExit(brokenApp);
 if (brokenExit !== 0) await stop(1, `the damaged bundle's launch ended with ${brokenExit}`);
 console.log('smoke: the damaged bundle was reported and the open project stayed');
 
+/* ---------- 6. a portable copy ---------- */
+
+const portableRoot = path.join(scratch, 'portable');
+const portableExe = path.join(portableRoot, path.basename(exe));
+const normalProfile = path.join(scratch, 'appdata');
+console.log(`smoke: copying the packaged folder to ${portableRoot}`);
+cpSync(path.dirname(exe), portableRoot, { recursive: true });
+writeFileSync(path.join(portableRoot, 'portable.txt'), '');
+mkdirSync(normalProfile, { recursive: true });
+
+const portablePort = await freePort();
+const portableApp = launch('portable', [`--remote-debugging-port=${portablePort}`], {
+  exe: portableExe,
+  // Windows keeps the normal profile under %APPDATA%. Pointing it at the scratch
+  // folder shows whether the app used it or the data folder beside the exe.
+  env: { APPDATA: normalProfile, LOCALAPPDATA: normalProfile },
+});
+await attach(portableApp, portablePort, 'from a portable copy');
+
+/* The marker makes the shell create `data` on startup; what proves it is used is
+   Chromium's own profile files appearing inside it. */
+const portableDataDir = path.join(portableRoot, 'data');
+const profileFiles = ['IndexedDB', 'Local Storage', 'Preferences', 'Network'];
+const portableData = () => (existsSync(portableDataDir) ? readdirSync(portableDataDir) : []);
+const portableStartedAt = Date.now();
+while (!profileFiles.some(name => portableData().includes(name)) && Date.now() - portableStartedAt < LOAD_TIMEOUT) {
+  await sleep(250);
+}
+const kept = portableData();
+if (!kept.length) await stop(1, `the portable copy never created ${portableDataDir}`);
+if (!profileFiles.some(name => kept.includes(name))) {
+  await stop(1, `the portable data folder holds no app data (${kept.join(', ')})`);
+}
+const strayProfile = path.join(normalProfile, 'Tapehouse');
+if (existsSync(strayProfile)) await stop(1, `the portable copy also wrote a profile at ${strayProfile}`);
+console.log(`smoke: the portable copy kept its data beside the exe (${kept.slice(0, 4).join(', ')})`);
+
 if (problems.length) await stop(1, `${problems.length} problem(s):\n  ${problems.join('\n  ')}`);
 
 console.log('smoke ok');
 // One annotation per green run, so the file hooks are visible without the job log.
 if (process.env.GITHUB_ACTIONS) {
-  console.log('::notice title=smoke::page rendered | opened "Smoke Alpha" from the command line | a second launch handed "Smoke Beta" to the running window | two files in quick succession opened "Smoke Delta" | a damaged bundle was reported without dropping "Smoke Delta"');
+  console.log('::notice title=smoke::page rendered | opened "Smoke Alpha" from the command line | a second launch handed "Smoke Beta" to the running window | two files in quick succession opened "Smoke Delta" | a damaged bundle was reported without dropping "Smoke Delta" | a portable copy kept its data beside the exe');
 }
 await stop(0, null);
