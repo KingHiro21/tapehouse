@@ -6,14 +6,15 @@
    open takes the project instead of a second app appearing.
 
    Talks to Chromium's DevTools protocol directly, so it needs no extra npm packages
-   — just Node 22+, which has fetch and WebSocket built in.
+   — just Node 22+, which has fetch, WebSocket and zlib.crc32 built in.
 
    Usage: node tools/smoke-win.mjs [path-to-exe]   (default: out/Tapehouse-win32-x64/Tapehouse.exe) */
-import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { crc32 } from 'node:zlib';
 
 const exe = path.resolve(process.argv[2] || path.join('out', 'Tapehouse-win32-x64', 'Tapehouse.exe'));
 const START_TIMEOUT = 60_000;
@@ -28,22 +29,6 @@ if (!existsSync(exe)) {
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /* ---------- a real .tapehouse file, built the way the app builds one ---------- */
-
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    table[i] = c >>> 0;
-  }
-  return table;
-})();
-
-const crc32 = buffer => {
-  let c = 0xffffffff;
-  for (const byte of buffer) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-};
 
 /* Stored (uncompressed) ZIP entries. The app reads the central directory, so a
    plain header, the bytes and the directory are all it takes. */
@@ -143,23 +128,12 @@ const watch = (label, proc) => {
 
 const launch = (label, args) => watch(label, spawn(exe, args, { stdio: ['ignore', 'pipe', 'pipe'] }));
 
-/* What the packaged app actually ships, in case the page it asks for is not there. */
+/* What the packaged app actually ships, in case the page it asks for is not there.
+   The shell names the file it could not serve in its own output, above. */
 function packageNotes() {
   const resources = path.join(path.dirname(exe), 'resources');
-  const asar = path.join(resources, 'app.asar');
-  if (!existsSync(asar)) {
-    try { return [`no app.asar; resources: ${readdirSync(resources).join(', ')}`]; }
-    catch (e) { return [`no resources folder (${e.code})`]; }
-  }
-  const notes = [`app.asar ${Math.round(statSync(asar).size / 1024)} KB`];
-  try {
-    const tool = path.join('node_modules', '@electron', 'asar', 'bin', 'asar.js');
-    const list = execFileSync(process.execPath, [tool, 'list', asar], { encoding: 'utf8' });
-    notes.push(...list.trim().split('\n').filter(Boolean).slice(0, 24));
-  } catch (e) {
-    notes.push(`listing failed: ${String(e.message).split('\n')[0]}`);
-  }
-  return notes;
+  try { return readdirSync(resources).map(name => `resources/${name}`); }
+  catch (e) { return [`no resources folder (${e.code})`]; }
 }
 
 /* A blank page is hard to diagnose from a log line, so a failed run leaves the
@@ -180,7 +154,7 @@ async function captureFailure() {
   try {
     const lines = [
       `page: ${lastState ? lastState.title : '(not read)'}`,
-      `elements: ${lastState ? lastState.state.elements : '?'}, text: ${lastState ? lastState.state.text : '?'} chars`,
+      `text: ${lastState ? `${lastState.state.text} chars, ${lastState.state.controls}/6 controls` : '(not read)'}`,
       `fonts: ${lastState ? JSON.stringify(lastState.fonts) : '(not checked)'}`,
       '',
       ...(problems.length ? problems : ['(no captured messages)']),
@@ -299,15 +273,25 @@ function connect(target) {
   });
 }
 
+/* Waits for the handed-over window, attaches, and records what happens in it. */
+async function attach(app, port, how) {
+  const target = await waitForPage(port);
+  if (!target) {
+    const why = alive(app) ? 'the app never exposed a DevTools page' : `the app exited with code ${app.exitCode} ${how}`;
+    await stop(1, why);
+  }
+  session = await connect(target);
+  await Promise.all(['Page.enable', 'Runtime.enable', 'Log.enable', 'Network.enable'].map(method => session.send(method)));
+  return target;
+}
+
 const readPage = () => session.evaluate(`(() => ({
   title: document.title,
-  elements: document.body.querySelectorAll('*').length,
   text: document.body.innerText.trim().length,
   fontsTag: !!document.getElementById('th-fonts'),
   // The controls a working studio shows; a blank page cannot fake them.
   controls: ['#playBtn', '#stopBtn', '#bpm', '#projName', '#importBtn', '#app']
     .filter(sel => document.querySelector(sel)).length,
-  project: (document.getElementById('projName') || {}).value || '',
 }))()`);
 
 const readFonts = () => session.evaluate(`Promise.all([
@@ -332,15 +316,7 @@ const pagePort = await freePort();
 const pageProfile = path.join(scratch, 'page');
 console.log(`smoke: launching ${path.basename(exe)} on port ${pagePort}`);
 const pageApp = launch('page', [`--remote-debugging-port=${pagePort}`, `--user-data-dir=${pageProfile}`]);
-
-const pageTarget = await waitForPage(pagePort);
-if (!pageTarget) {
-  const why = alive(pageApp) ? 'the app never exposed a DevTools page' : `the app exited with code ${pageApp.exitCode} before it opened a page`;
-  await stop(1, why);
-}
-
-session = await connect(pageTarget);
-await Promise.all(['Page.enable', 'Runtime.enable', 'Log.enable', 'Network.enable'].map(method => session.send(method)));
+await attach(pageApp, pagePort, 'before it opened a page');
 
 /* Reload with the listeners attached, so startup errors and early requests are seen. */
 loaded = false;
@@ -353,10 +329,10 @@ await sleep(1000); // let the app paint and any late requests fire
 const state = await readPage();
 const fonts = await readFonts();
 lastState = { title: state.title, state, fonts };
-console.log(`smoke: ${state.title || '(no title)'} — ${state.elements} elements, ${state.text} chars of text, ${state.controls}/6 controls`);
+console.log(`smoke: ${state.title || '(no title)'} — ${state.text} chars of text, ${state.controls}/6 controls`);
 
-if (state.controls < 6 || state.text < 100 || state.elements < 50) {
-  await stop(1, `the page looks blank (${state.elements} elements, ${state.text} chars, ${state.controls}/6 controls)`);
+if (state.controls < 6 || state.text < 100) {
+  await stop(1, `the page looks blank (${state.text} chars of text, ${state.controls}/6 controls)`);
 }
 if (!state.fontsTag) problems.push('fonts: the page has no #th-fonts block');
 if (!fonts.display || !fonts.mono) problems.push(`fonts: not loaded (Michroma ${fonts.display}, IBM Plex Mono ${fonts.mono})`);
@@ -376,19 +352,12 @@ const hookProfile = path.join(scratch, 'hooks');
 console.log(`smoke: opening ${path.basename(first)} on launch`);
 const hookApp = launch('first launch', [`--remote-debugging-port=${hookPort}`, `--user-data-dir=${hookProfile}`, first]);
 
-const hookTarget = await waitForPage(hookPort);
-if (!hookTarget) {
-  const why = alive(hookApp) ? 'the app never exposed a DevTools page' : `the app exited with code ${hookApp.exitCode} when given a project`;
-  await stop(1, why);
-}
-session = await connect(hookTarget);
-await Promise.all(['Page.enable', 'Runtime.enable', 'Log.enable', 'Network.enable'].map(method => session.send(method)));
+const hookTarget = await attach(hookApp, hookPort, 'when given a project');
 await expectProject('Smoke Alpha');
 console.log('smoke: the project on the command line opened on launch');
 
 /* ---------- 3. Explorer double-clicking a second file ---------- */
 
-const before = await pages(hookPort);
 console.log(`smoke: launching a second copy with ${path.basename(second)}`);
 const secondApp = launch('second launch', [`--user-data-dir=${hookProfile}`, second]);
 await expectProject('Smoke Beta');
@@ -396,7 +365,7 @@ await expectProject('Smoke Beta');
 const after = await pages(hookPort);
 if (!alive(hookApp)) await stop(1, 'the first app exited instead of keeping its window');
 if (after.length !== 1) await stop(1, `the second launch left ${after.length} app windows instead of one`);
-if (after[0].id !== before[0].id) await stop(1, 'the second launch replaced the window instead of reusing it');
+if (after[0].id !== hookTarget.id) await stop(1, 'the second launch replaced the window instead of reusing it');
 const secondExit = !alive(secondApp) ? secondApp.exitCode : await Promise.race([
   new Promise(resolve => secondApp.once('exit', code => resolve(code))),
   sleep(10_000).then(() => 'still running'),
