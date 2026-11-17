@@ -18,6 +18,9 @@ const calls = {
   externalUrls: [],
   loadedUrls: [],
   appEvents: {},
+  downloadHandler: null,
+  saveDialogs: [],
+  saveDialogResult: { canceled: false, filePath: '/sessions/Tapehouse Bounce.wav' },
   ready: false,
   quit: false,
 };
@@ -26,7 +29,11 @@ class FakeWebContents {
   constructor() {
     this.windowOpenHandler = null;
     this.navigateHandler = null;
+    this.sent = [];
+    this.destroyed = false;
   }
+  isDestroyed() { return this.destroyed; }
+  send(channel, payload) { this.sent.push({ channel, payload }); }
   setWindowOpenHandler(fn) { this.windowOpenHandler = fn; }
   on(event, fn) {
     if (event === 'will-navigate') this.navigateHandler = fn;
@@ -39,8 +46,10 @@ class BrowserWindow {
     this.webContents = new FakeWebContents();
     this.shown = false;
     this.minimized = false;
+    this.destroyed = false;
     calls.windows.push(this);
   }
+  isDestroyed() { return this.destroyed; }
   once(event, fn) { if (event === 'ready-to-show') this.showOnReady = fn; }
   on(event, fn) { if (event === 'closed') this.closedHandler = fn; }
   show() { this.shown = true; }
@@ -51,6 +60,7 @@ class BrowserWindow {
 }
 
 const app = {
+  getPath(name) { calls.paths = { ...(calls.paths || {}), [name]: '/downloads' }; return '/downloads'; },
   // main.js calls app.commandLine.appendSwitch, as real Electron does.
   commandLine: {
     appendSwitch(name, value) { calls.switches.push({ name, value }); },
@@ -71,6 +81,11 @@ const Menu = {
 
 const dialog = {
   showMessageBox(window, options) { calls.dialogs.push({ window, options }); },
+  // The harness sets saveDialogResult to play out a choice or a cancellation.
+  showSaveDialogSync(window, options) {
+    calls.saveDialogs.push({ window, options });
+    return calls.saveDialogResult;
+  },
 };
 
 const protocol = {
@@ -82,7 +97,7 @@ const session = {
   defaultSession: {
     setPermissionRequestHandler(fn) { calls.permissionRequest = fn; },
     setPermissionCheckHandler(fn) { calls.permissionCheck = fn; },
-    on() {},
+    on(event, fn) { if (event === 'will-download') calls.downloadHandler = fn; },
   },
 };
 

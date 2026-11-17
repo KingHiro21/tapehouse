@@ -5,6 +5,7 @@
    handler, permission policy, menu and window options are asserted directly. */
 
 const Module = require('node:module');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const stubPath = path.join(__dirname, 'stub-electron.js');
@@ -89,6 +90,9 @@ async function run() {
       `${win.options.width}x${win.options.height}`);
     check('window keeps the transport usable', win.options.minWidth === 1100 && win.options.minHeight === 640,
       `${win.options.minWidth}x${win.options.minHeight}`);
+    check('preload bridges download outcomes',
+      typeof win.options.webPreferences.preload === 'string' && fs.existsSync(win.options.webPreferences.preload),
+      win.options.webPreferences.preload);
     check('renderer stays sandboxed', win.options.webPreferences.sandbox === true &&
       win.options.webPreferences.contextIsolation === true &&
       win.options.webPreferences.nodeIntegration === false);
@@ -108,6 +112,53 @@ async function run() {
     win.webContents.navigateHandler({ preventDefault() { prevented = true; } }, 'https://example.com/away');
     check('navigation away is blocked', prevented === true &&
       calls.externalUrls.includes('https://example.com/away'));
+  }
+
+  check('downloads are handled by the shell', typeof calls.downloadHandler === 'function');
+  if (typeof calls.downloadHandler === 'function') {
+    const fakeItem = name => {
+      const handlers = {};
+      return {
+        filename: name,
+        savePath: null,
+        cancelled: false,
+        getFilename() { return this.filename; },
+        getSavePath() { return this.savePath; },
+        setSavePath(value) { this.savePath = value; },
+        cancel() { this.cancelled = true; this.fire('done', 'cancelled'); },
+        once(event, fn) { handlers[event] = fn; },
+        fire(event, state) { if (handlers[event]) handlers[event]({}, state); },
+      };
+    };
+    const page = { sent: [], isDestroyed: () => false, send(channel, payload) { this.sent.push({ channel, payload }); } };
+
+    const bounce = fakeItem('Tapehouse Bounce.wav');
+    calls.saveDialogResult = { canceled: false, filePath: 'D:/Sessions/Bounce.wav' };
+    calls.downloadHandler({ preventDefault() {} }, bounce, page);
+
+    const asked = calls.saveDialogs[0];
+    check('export asks where to save', calls.saveDialogs.length === 1 && !!asked, `${calls.saveDialogs.length} dialogs`);
+    check('dialog starts in Downloads with the export name',
+      !!asked && asked.options.defaultPath === '/downloads/Tapehouse Bounce.wav', asked && asked.options.defaultPath);
+    check('WAV exports offer a WAV filter',
+      !!asked && asked.options.filters[0].extensions.join(',') === 'wav', asked && JSON.stringify(asked.options.filters));
+    check('chosen folder is used', bounce.savePath === 'D:/Sessions/Bounce.wav', bounce.savePath);
+    check('saving is not cancelled when a folder is picked', bounce.cancelled === false);
+
+    bounce.fire('done', 'completed');
+    const reported = page.sent[page.sent.length - 1];
+    check('page hears where the export went',
+      !!reported && reported.channel === 'tapehouse:download' && reported.payload.canceled === false &&
+      reported.payload.path === 'D:/Sessions/Bounce.wav', JSON.stringify(reported && reported.payload));
+
+    const dismissed = fakeItem('Tapehouse.zip');
+    calls.saveDialogResult = { canceled: true, filePath: undefined };
+    calls.downloadHandler({ preventDefault() {} }, dismissed, page);
+    check('dismissing the dialog cancels the export',
+      dismissed.cancelled === true && dismissed.savePath === null, `cancelled=${dismissed.cancelled}`);
+    const told = page.sent[page.sent.length - 1];
+    check('page is told the save was cancelled',
+      !!told && told.payload.canceled === true && told.payload.path === null, JSON.stringify(told && told.payload));
   }
 
   const help = (calls.menu || []).find(item => item.label === 'Help');

@@ -1566,6 +1566,13 @@ function browserDownloads() {
     const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]));
     const a = el('a', { href: url, download: filename, style: { display: 'none' } }); document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
+    // The desktop shell asks where the file goes and reports back; a plain page can't
+    // know, so there it just hands the save to the browser.
+    if (window.tapehouse && window.tapehouse.nextDownload) {
+      const done = await window.tapehouse.nextDownload();
+      if (done && done.canceled) { const e = new Error('Save cancelled'); e.code = 'declined'; throw e; }
+      return done;
+    }
   } };
 }
 /* The whole app as one .html file, for recording outside claude.ai (which doesn't pass the mic to pages). */
@@ -1602,7 +1609,7 @@ async function exportAudio(what, out) {
     out.replaceChildren(el('span', {}, `${fmtDur(frames / buffer.sampleRate)} rendered, ${fmtBytes(wav.byteLength)} as 16-bit WAV.`),
       peak > 1 ? el('span', { class: 'fx-err' }, `The mix clips (peak ${fmtDb(peak)} dB). Pull the master fader down a little.`) : null,
       el('audio', { controls: true, src: url }));
-    if (downloads && downloads.native) { if (await saveFile(name + '.wav', new Uint8Array(wav))) out.append(el('span', { class: 'muted small' }, 'Saved to your Downloads folder.')); }
+    if (downloads && downloads.native) { if (await saveFile(name + '.wav', new Uint8Array(wav))) out.append(el('span', { class: 'muted small' }, 'Saved.')); }
     else if (downloads) { if (await saveFile(name + '.zip', makeZip([{ name: name + '.wav', data: new Uint8Array(wav) }]))) out.append(el('span', { class: 'muted small' }, 'Saved as a .zip with the .wav inside.')); }
     else out.append(el('span', { class: 'muted small' }, 'Saving files isn’t available in this view, so listen to it here.'));
   } catch (e) { out.replaceChildren(el('span', { class: 'fx-err' }, `Render failed: ${e.message}`)); }

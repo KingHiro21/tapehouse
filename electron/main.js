@@ -26,6 +26,41 @@ const TYPES = {
 
 let win = null;
 
+const DOWNLOAD_FILTERS = {
+  wav: { name: 'WAV audio', extensions: ['wav'] },
+  zip: { name: 'Zip archive', extensions: ['zip'] },
+  json: { name: 'Tapehouse plugin', extensions: ['json'] },
+};
+
+/* Bounces, project bundles and library backups leave the page as downloads. Ask
+   where each one goes with a name and filter that match the file, instead of
+   relying on Chromium's default routine; a dismissed dialog cancels the file. */
+function saveDownloads() {
+  session.defaultSession.on('will-download', (event, item, webContents) => {
+    // Tell the page how the export ended, so it never claims a save that was
+    // dismissed or landed somewhere other than Downloads.
+    item.once('done', (event, state) => {
+      if (webContents.isDestroyed()) return;
+      const completed = state === 'completed';
+      webContents.send('tapehouse:download', {
+        canceled: !completed,
+        path: completed ? item.getSavePath() : null,
+      });
+    });
+
+    const name = item.getFilename();
+    const filter = DOWNLOAD_FILTERS[path.extname(name).slice(1).toLowerCase()];
+    const parent = win && !win.isDestroyed() ? win : undefined;
+    const { canceled, filePath } = dialog.showSaveDialogSync(parent, {
+      title: 'Save from Tapehouse',
+      defaultPath: path.join(app.getPath('downloads'), name),
+      filters: filter ? [filter, { name: 'All files', extensions: ['*'] }] : undefined,
+    });
+    if (canceled || !filePath) { item.cancel(); return; }
+    item.setSavePath(filePath);
+  });
+}
+
 /* Reads the file in the main process, so it works the same inside app.asar. */
 function serveApp() {
   protocol.handle('app', async (request) => {
@@ -92,6 +127,7 @@ function createWindow() {
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -128,6 +164,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     serveApp();
     allowAppPermissions();
+    saveDownloads();
     buildMenu();
     createWindow();
   });
