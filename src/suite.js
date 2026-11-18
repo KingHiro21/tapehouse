@@ -339,7 +339,7 @@ const SUITE_ARTISTS = [
   { id: 'bieber', name: 'Justin Bieber', al: ['justin bieber', 'bieber'], chain: 'bieber' },
   { id: 'laroi', name: 'Kid LAROI', al: ['the kid laroi', 'kid laroi', 'laroi'], chain: 'laroi' },
   { id: 'mgk', name: 'MGK', al: ['machine gun kelly', 'mgk'], chain: 'mgk' },
-  { id: 'weeknd', name: 'The Weeknd', al: ['the weeknd', 'weeknd', 'weekend', 'abel'], s: { retune: 22, humanize: 20, warmth: -1, presence: 1, air: 4, compress: 55, deess: 50, tamer: 35, width: 35, delay: 25, reverb: 40, size: 3.2, predelay: 30 }, ch: 'opto', time: 1 },
+  { id: 'weeknd', name: 'The Weeknd', al: ['the weeknd', 'weeknd', 'weekend', 'abel'], s: { retune: 22, humanize: 20, warmth: -1, presence: 1, air: 4, compress: 55, deess: 50, tamer: 35, width: 35, delay: 15, reverb: 26, size: 2.2, predelay: 40 }, ch: 'opto', time: 1 },
   { id: 'drake', name: 'Drake', al: ['drake', 'drizzy'], s: { retune: 22, humanize: 20, warmth: 0.5, presence: 1.5, air: 3, compress: 55, deess: 45, tamer: 30, width: 8, delay: 6, reverb: 10, size: 1 }, ch: 'fet', time: 0.5 },
   // 40’s chain (Sound On Sound, on “Headlines”): Auto-Tune just to centre the pitch, RVox, de-esser, Pultec air, and a
   // punchy compressor last. The beat is degraded instead of the vocal, so the top end belongs to the voice (air 3) and
@@ -349,7 +349,7 @@ const SUITE_ARTISTS = [
   { id: 'pop', name: 'Pop Smoke', al: ['pop smoke', 'popsmoke', 'woo'], s: { retune: 0, humanize: 0, warmth: 1.5, presence: 1, air: 0.5, grit: 15, compress: 65, deess: 40, tamer: 30, width: 10, delay: 10, reverb: 22, size: 1.6 }, ch: 'fet', time: 0.5, hard: true },
   { id: 'kanye', name: 'Kanye West', al: ['kanye west', 'kanye', 'ye '], s: { retune: 0, humanize: 5, warmth: 0.5, presence: 1.5, air: 2, grit: 10, compress: 60, deess: 45, tamer: 35, width: 20, delay: 12, reverb: 18, size: 1.8 }, ch: 'fet', time: 0.5, hard: true },
   { id: 'posty', name: 'Post Malone', al: ['post malone', 'posty'], s: { retune: 12, humanize: 10, warmth: 1, presence: 0.5, air: 2, grit: 8, compress: 55, deess: 45, tamer: 35, width: 25, delay: 22, reverb: 30, size: 2.4 }, ch: 'vox', time: 0.5 },
-  { id: 'juice', name: 'Juice WRLD', al: ['juice wrld', 'juice world', 'juicewrld'], s: { retune: 6, humanize: 10, warmth: 0.5, presence: 1.5, air: 2, grit: 12, compress: 55, deess: 45, tamer: 40, width: 28, delay: 22, reverb: 30, size: 2.6 }, ch: 'vox', time: 0.5, hard: true },
+  { id: 'juice', name: 'Juice WRLD', al: ['juice wrld', 'juice world', 'juicewrld'], s: { retune: 14, humanize: 25, flex: 0, warmth: -0.5, presence: 1.5, air: 2, grit: 10, compress: 55, deess: 45, tamer: 40, width: 28, delay: 15, reverb: 24, size: 1.5 }, ch: 'vox', time: 0.5, hard: true },
   { id: 'billie', name: 'Billie Eilish', al: ['billie eilish', 'billie'], s: { retune: 35, humanize: 35, flex: 30, warmth: 1.5, air: 3, compress: 60, deess: 60, tamer: 40, width: 10, delay: 10, reverb: 18, size: 1.6 }, ch: 'opto', time: 0.5, natural: true },
   { id: 'ariana', name: 'Ariana Grande', al: ['ariana grande', 'ariana'], s: { retune: 25, humanize: 25, warmth: -0.5, presence: 1, air: 4.5, compress: 55, deess: 60, tamer: 45, width: 35, delay: 15, reverb: 32, size: 2.6 }, ch: 'opto', time: 0.5, natural: true },
   { id: 'sza', name: 'SZA', al: ['sza'], s: { retune: 20, humanize: 20, warmth: 1, presence: 0.5, air: 3, compress: 50, deess: 50, tamer: 40, width: 22, delay: 20, reverb: 30, size: 2.8 }, ch: 'opto', time: 0.75, natural: true },
@@ -393,6 +393,7 @@ function suiteLoadPreset(ins, p) {
     m.vsPreset = p.name; delete m.vsMod;
     m.vsTarget = p.kind === 'user' ? (p.target || m.vsTarget || 'clean') : p.id; // who this preset sounds like
   });
+  suiteApplyProfileTune(ins); // your remembered voice: Tune starts from your range and drift, before any match
   suiteAutoMatch(ins);
 }
 /* With a take on the track, a new preset is fitted to your voice straight away (a moment after you stop flicking through). */
@@ -598,6 +599,7 @@ function renderVocal(v) {
   ui.vsChat = ui.vsChat || [{ who: 'bot', greet: true, text: '' }];
   ui.vsTab = ui.vsTab || 'tune';
   if (!suiteUser) suiteLoadUser().then(() => { if (ui.tab === 'vocal') renderView(); });
+  if (suiteVoiceProfile === undefined) { suiteVoiceProfile = null; Store.get('meta', 'voice-profile').then(r => { suiteVoiceProfile = (r && r.value && r.value.a) ? r.value : null; if (ui.tab === 'vocal') renderView(); }).catch(() => {}); }
   smartKeyEnsure();
   const ins = suiteIns();
   if (!(ins > 0)) {
@@ -680,6 +682,11 @@ function vsAssist(ins, m) {
   const go = tg && srcs.length ? el('div', { class: 'vsa-go-row' },
     el('button', { class: 'vsa-go', disabled: busy || !srcs.length, onclick: () => suiteMatch(ins, { src: ui.vsSrc }) }, icon('mic'), M && M.target === tg.id ? 'Match again' : 'Match my voice'),
     el('label', { class: 'vsa-src' }, el('span', {}, 'Using'), el('select', { 'aria-label': 'Which recording of your voice to use', disabled: busy, onchange: e => { ui.vsSrc = e.target.value; SVM.voice = null; } }, srcs.map(x => el('option', { value: x.id, selected: x.id === ui.vsSrc }, x.label))))) : null; // nothing to match yet: the opening line says what to do
+  const prof = suiteVoiceProfile;
+  const profRow = tg ? el('div', { class: 'vsa-prof' },
+    prof ? el('span', { class: 'vs-hint' }, `Knows your voice: ${prof.label} — ${suiteProfileWords(prof)}`) : null,
+    el('button', { class: 'vs-chip', title: 'Listen once to a recording of your voice (take, import or sing now) and remember it: every preset then starts from your range and drift', onclick: () => suiteLearnVoice(ins, ui.vsSrc) }, prof ? 'Update' : 'Learn my voice'),
+    prof ? el('button', { class: 'vs-chip', title: 'Forget this voice', onclick: () => { suiteForgetVoice(); renderView(); } }, 'Forget') : null) : null;
   const status = st && (busy || st.err) ? el('div', { class: 'vsa-status', role: 'status' }, el('span', {}, busy ? st.busy : st.err), busy ? el('span', { class: 'vsa-bar' }, el('i', { style: { width: Math.round((st.prog || 0) * 100) + '%' } })) : null) : null;
   let result = null;
   if (tg && M && M.target === tg.id && M.curves) {
@@ -702,7 +709,7 @@ function vsAssist(ins, m) {
     SR ? el('button', { type: 'button', class: 'vs-mic' + (ui.vsListening ? ' on' : ''), 'aria-label': 'Say it instead of typing', title: 'Say it instead of typing', onclick: () => suiteVoice(ins) }, icon('mic')) : null,
     el('input', { name: 'q', autocomplete: 'off', placeholder: isWide() ? 'Anything else? “less autotune”, “more reverb”, “sound like Drake”' : 'e.g. “less autotune”', 'aria-label': 'Tell the assistant what to change' }),
     el('button', { type: 'submit', class: 'vs-send', 'aria-label': 'Send' }, '➤'));
-  return el('div', { class: 'vs-crt' + (busy || ui.vsChat.some(c => c.busy) || ui.vsListening ? ' busy' : '') }, el('div', { class: 'vs-crt-in vsa' }, head, go, status, result, chat, ask));
+  return el('div', { class: 'vs-crt' + (busy || ui.vsChat.some(c => c.busy) || ui.vsListening ? ' busy' : '') }, el('div', { class: 'vs-crt-in vsa' }, head, go, profRow, status, result, chat, ask));
 }
 /* The Record section: the one place for everything about getting a take in (mic, count-in, loop, timing, takes) and what
    happened to it after (the polish). The Record button at the top does exactly the same as the big button here. */
@@ -830,7 +837,12 @@ function suitePanel(ins, tab, map) {
     const note = el('div', { class: 'vs-note' }, el('span', { class: 'vs-lbl' }, 'Current note'), el('b', { id: 'vsNote' }, '– –'),
       el('div', { class: 'vs-cents' }, el('i', { id: 'vsNeedle' }), el('span', {}, '−50'), el('span', {}, '−25'), el('span', {}, '0'), el('span', {}, '+25'), el('span', {}, '+50')), el('small', { id: 'vsNoteSub' }, 'Sing or play a vocal'));
     const feel = el('div', { class: 'vs-feel' }, TUNE_FEELS.map(([id, lab, rt]) => el('button', { class: 'vs-chip' + (tf && tuneFeelOf(tf) === id ? ' lit' : ''), onclick: () => { const t = TUNE_FEELS.find(x => x[0] === id); mutate(P => { suiteEnsure(P, ins, ['tune']); const f = suiteClassify(P.mixer[ins].fx).tune; f.bypass = false; Object.assign(f.params, { retune: t[2], humanize: t[3], flex: t[4], fcorr: t[5] }); }); } }, lab)));
-    return [headRow, el('div', { class: 'vs-tune' }, keyBox, note, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex', 'depth', 'formant']), feel))];
+    const prof = suiteVoiceProfile;
+    const profLine = prof ? el('div', { class: 'vs-feel' },
+      el('span', { class: 'vs-hint' }, `Knows your voice: ${prof.label}, ${suiteProfileWords(prof)}`),
+      el('button', { class: 'vs-chip', title: 'Set Tune’s voice type and speed from what it learned about you', onclick: () => { suiteApplyProfileTune(ins); renderView(); toast('Tune set from your voice profile.'); } }, 'Fit to my voice'),
+      el('button', { class: 'vs-chip', title: 'Forget this voice', onclick: () => { suiteForgetVoice(); renderView(); } }, 'Forget')) : null;
+    return [headRow, el('div', { class: 'vs-tune' }, keyBox, note, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex', 'depth', 'formant']), feel)), profLine];
   }
   if (tab === 'cleanup') return [headRow, knobs(['gate', 'nc', 'deecho', 'deess', 'tamer', 'lowcut']), el('p', { class: 'vs-hint' }, 'Noise removal takes out static hiss, hum and fan noise, De-echo tightens room echo around your lines, De-ess tames S sounds, Tamer pulls down harsh ringing, Noise gate quiets everything between phrases.')];
   if (tab === 'tone') return [headRow, knobs(['warmth', 'presence', 'air', 'grit']), map.eqm ? el('p', { class: 'vs-hint' }, 'Listen & Match’s EQ stays underneath; these are your moves on top.') : null];
@@ -1011,7 +1023,7 @@ const SUITE_TARGETS = {
   drake: { lra: 4, sib: -9, tilt: [[150, 0.5], [300, 1], [600, 0.5], [1500, 0.5], [4000, 0], [8000, -1], [14000, -1.5]] },
   travis: { lra: 4, sib: -8, tilt: [[300, -0.5], [1500, 0], [3000, 1.5], [6000, 1.5], [10000, 1.5], [16000, 1]] },
   posty: { lra: 5, sib: -9, tilt: [[200, 0.5], [400, 0.5], [1000, 0], [2500, 0.5], [8000, 0.5], [14000, 1]] },
-  juice: { lra: 5, sib: -9, tilt: [[300, 0], [2000, 0.5], [3500, 1.5], [8000, 1], [14000, 1]] },
+  juice: { lra: 5, sib: -9, tilt: [[150, 0], [250, -1], [500, 0], [2500, 1], [3500, 1], [6500, 0.5], [12000, 0.5]] },
   billie: { lra: 7, sib: -11, tilt: [[120, 1], [250, 1.5], [500, 0.5], [2500, -1], [5000, -0.5], [9000, 0.5], [14000, 1]] },
   ariana: { lra: 6, sib: -10, tilt: [[250, -0.5], [500, -0.5], [2000, 0], [4000, 0.5], [8000, 2], [12000, 2.5], [16000, 2.5]] },
   sza: { lra: 6, sib: -10, tilt: [[200, 0.5], [400, 0.5], [1500, 0], [5000, 0.5], [10000, 1.5], [16000, 1.5]] },
@@ -1030,14 +1042,17 @@ function suiteTargetFor(m) {
 }
 const SVM = { token: 0, voice: null };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-/* Where your voice comes from: the take on this track, 10 seconds of singing now, or a file in your library. */
+/* Where your voice comes from: the take on this track, 10 seconds of singing now, or a file in your library.
+   Recordings and takes are listed first — they are your voice. A pre-recorded vocal counts even when it sits on a
+   track the suite doesn't know about yet, so imported vocals can always be matched and learned from. */
 function suiteSources(ins) {
   const out = [], take = suiteTakeClip(ins);
   if (take) out.push({ id: 'take', label: 'Your latest take', ref: take.ref });
   const micOk = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && window.isSecureContext !== false;
   if (REC.stream || (STANDALONE && micOk && !REC.err)) out.push({ id: 'mic', label: 'Sing 10 seconds now' });
-  const voc = suiteVocalTracks(project), beat = new Set(project.playlist.clips.filter(c => c.kind === 'audio' && !voc.has(c.track)).map(c => c.ref)); // the beat is not your voice
-  for (const s of lmLibraryAudio().slice(0, 30)) if ((!take || s.id !== take.ref) && !beat.has(s.id)) out.push({ id: 'lib:' + s.id, label: s.name, ref: s.id });
+  const all = sortedLib().filter(s => s.duration >= 4 && !String(s.folder).startsWith('Factory'));
+  const mine = all.filter(s => /record|take|vocal|vox|voice/i.test(`${s.folder} ${s.name}`)), rest = all.filter(s => !mine.includes(s));
+  for (const s of [...mine, ...rest].slice(0, 40)) if (!take || s.id !== take.ref) out.push({ id: 'lib:' + s.id, label: s.name, ref: s.id });
   return out;
 }
 async function suiteCaptureMic(ins, tick) {
@@ -1052,6 +1067,61 @@ async function suiteCaptureMic(ins, tick) {
   const buf = new AudioBuffer({ numberOfChannels: 1, length: total, sampleRate: ctx.sampleRate }), d = buf.getChannelData(0); let o = 0;
   for (const c of chunks) { d.set(c.d, o); o += c.d.length; }
   return buf;
+}
+/* ---------- your voice, remembered ---------- */
+/* One analysis of a recording of your voice (a take, an import, 10 seconds live), kept across sessions. Every
+   preset you load afterwards starts from it: Tune is set for your voice type and how far you drift, so it tracks
+   your notes before you even press Match. undefined = not loaded yet, null = learned nothing (or forgotten). */
+let suiteVoiceProfile;
+function suiteProfileWords(p) {
+  const a = p && p.a; if (!a || !a.f0) return '';
+  const nm = m => noteName(Math.round(69 + 12 * Math.log2(m / 440)));
+  const drift = suiteDrift(a, { params: { scale: 'key', root: -1, smode: 'minor' } });
+  return `${{ soprano: 'a high voice', low: 'a low voice', tenor: 'a mid-range voice' }[lmVoiceType(a)]} (${nm(a.f0.lo)}–${nm(a.f0.hi)})${drift != null ? `, drifting about ${Math.round(drift)} cents` : ''}`;
+}
+/* Sets the track's Tune from the profile: voice type always, retune faster only if you drift hard (the same
+   adjustment the fit makes after a take, so both paths agree). */
+function suiteApplyProfileTune(ins) {
+  const p = suiteVoiceProfile; if (!p || !p.a) return;
+  const m = project.mixer[ins]; if (!m) return;
+  const tf = suiteClassify(m.fx).tune; if (!tf || tf.bypass) return;
+  const ch = { voice: lmVoiceType(p.a) };
+  const drift = suiteDrift(p.a, { params: { scale: tf.params.scale || 'key', root: tf.params.root == null ? -1 : tf.params.root, smode: tf.params.smode || 'minor' } });
+  if (drift != null && drift > 25) ch.retune = Math.round(clamp((+tf.params.retune || 20) * Math.pow(25 / drift, 1.3), 6, 40));
+  for (const k in ch) if (tf.params[k] !== ch[k]) { tf.params[k] = ch[k]; if (engine) engine.setFxParam(ins, tf.id, k, ch[k]); }
+  changed({ render: false });
+}
+async function suiteRememberVoice(a, label) {
+  if (!a || !a.f0) { toast('That recording was too short to learn your voice from. Sing or import at least five seconds.'); return; }
+  suiteVoiceProfile = { v: 1, at: Date.now(), label: String(label || 'your voice').slice(0, 60),
+    a: { f0: a.f0, lra: a.lra, sibRel: a.sibRel, sibFreq: a.sibFreq, key: a.key, noiseDb: a.noiseDb, activeDb: a.activeDb, clips: a.clips, peaky: a.peaky, wetDb: a.wetDb, notes: (a.notes || []).slice(0, 1200) } };
+  try { await Store.put('meta', { key: 'voice-profile', value: suiteVoiceProfile }); } catch (e) { /* stays for this session */ }
+  const ins = suiteIns(); if (ins > 0) suiteApplyProfileTune(ins);
+  toast(`I’ll remember this voice: ${suiteProfileWords(suiteVoiceProfile)}. Every preset now starts from it.`, { ms: 7000 });
+}
+function suiteForgetVoice() {
+  suiteVoiceProfile = null;
+  try { Store.put('meta', { key: 'voice-profile', value: null }).catch(() => {}); } catch (e) { /* ok */ }
+  toast('Forgotten. Presets go back to their plain starting points.');
+}
+/* Learns from whatever “Using” points at: the take, an import, or 10 seconds sung now. */
+async function suiteLearnVoice(ins, srcId) {
+  const srcs = suiteSources(ins); const src = srcs.find(s => s.id === srcId) || srcs[0];
+  if (!src) { toast('Record or import a vocal first, then press Learn my voice.'); return; }
+  const st = ui.vsM = (ui.vsM && ui.vsM.ins === ins) ? ui.vsM : { ins, busy: '', prog: 0, err: '' };
+  if (st.busy) return;
+  st.err = ''; st.busy = src.id === 'mic' ? 'Getting ready…' : 'Loading your voice…'; st.prog = 0; suiteRefreshSoft();
+  try {
+    let buf;
+    if (src.id === 'mic') buf = await suiteCaptureMic(ins, s => { st.busy = `Sing the way you normally do… ${s}`; st.prog = (10 - s) / 10; suiteRefreshSoft(); });
+    else buf = await getBuffer(src.ref);
+    if (!buf) throw new Error('That recording couldn’t be loaded.');
+    st.busy = 'Listening to your voice…'; suiteRefreshSoft();
+    const a = await analyzeVoice(buf, p => { st.prog = p; suiteRefreshSoft(); });
+    st.busy = ''; st.done = true;
+    await suiteRememberVoice(a, src.label);
+  } catch (e) { st.busy = ''; toast(e.message || String(e), { kind: 'error' }); }
+  suiteRefreshSoft();
 }
 /* Your voice, measured once per take: switching presets afterwards re-fits without listening again. */
 async function suiteGetVoice(ins, srcId, onBusy) {
@@ -1227,6 +1297,7 @@ async function suiteMatch(ins, opts = {}) {
     }
     st.busy = ''; st.done = true; st.undoAt = hist.undo.length > before ? hist.undo.length : -1;
     if (ui.tab !== 'vocal') toast(vocal ? `Matched your take to ${tg.label}.` : 'Set your level against the beat.', { action: { label: 'See it', run: () => setTab('vocal') }, ms: 6000 });
+    else if (vocal && suiteVoiceProfile === null && v.a && v.a.f0) toast(`Matched to ${tg.label}. Want Tune to start from this voice from now on?`, { action: { label: 'Remember this voice', run: () => suiteRememberVoice(v.a, v.label) }, ms: 9000 });
   } catch (e) { if (token === SVM.token) { st.busy = ''; st.err = e.message || String(e); } console.warn('match', e); }
   suiteRefreshSoft();
 }

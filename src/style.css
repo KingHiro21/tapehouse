@@ -886,6 +886,8 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 .vsa-go:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
 .vsa-go .ic svg{width:15px;height:15px;display:block}
 .vsa-src{display:inline-flex;align-items:center;gap:8px;font:500 11.5px var(--font-mono);color:#b98a45}
+.vsa-prof{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font:500 11.5px var(--font-mono);color:#b98a45;position:relative;z-index:1}
+.vsa-prof .vs-hint{color:#b98a45}
 .vs .vsa-src select{background:#1b1208;color:var(--amber);border-color:var(--amber-dim);color-scheme:dark;font:500 12.5px var(--font-mono);max-width:230px;min-height:32px}
 .vsa-status{display:flex;flex-direction:column;gap:6px;font:500 12.5px var(--font-mono);color:var(--amber);position:relative;z-index:1}
 .vsa-bar{display:block;height:5px;border-radius:3px;background:rgba(255,178,74,.15);overflow:hidden}

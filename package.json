@@ -1,7 +1,7 @@
 {
   "name": "tapehouse",
   "productName": "Tapehouse",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "private": true,
   "description": "Tapehouse — a music studio in a window: FL Studio-style editing with AI song generation.",
   "author": {
