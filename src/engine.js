@@ -7,7 +7,7 @@
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.1';
+const APP_VERSION = '2.4.2';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -761,17 +761,34 @@ class Engine {
   }
   rebuildFx(i, sig) {
     const ins = this.inserts[i], m = this.P().mixer[i];
-    disc(ins.input); if (ins.pre) ins.input.connect(ins.pre); ins.fx.forEach(f => f.dispose()); ins.fx = [];
+    disc(ins.input); if (ins.pre) ins.input.connect(ins.pre);
+    /* Keep the effects that survive the change. A knob that turns a module on, a bypass toggle or even a preset
+       switch used to dispose and rebuild the whole chain, which clicked and dropped out while playing. Now running
+       effects are reconnected in place (their internal state — Tune's grains, reverb tails — keeps running) and
+       only the effects that are really gone are torn down. */
+    const old = ins.fx, keep = new Map(); old.forEach(f => { if (f.input) keep.set(f.id, f); });
+    const links = []; let prevOut = ins.input; // sever exactly the old chain links, so reused nodes lose their stale neighbours
+    for (const f of old) if (f.input) { links.push([prevOut, f.input]); prevOut = f.output; }
+    ins.fx = [];
     let node = ins.input;
     for (const f of m.fx) {
       const pl = plugins.get(f.plugin); let inst = null;
       if (pl && !f.bypass && pl.manifest.type === 'effect') {
-        try { inst = createEffect(this, pl, f.params); this.failed.delete(f.plugin); }
-        catch (e) { if (!pl.manifest.script || this.loaded.has(pl.id)) this.failed.set(f.plugin, e.message); }
+        const oldInst = keep.get(f.id);
+        if (oldInst && oldInst.pluginId === f.plugin) {
+          inst = oldInst;
+          const vals = effectiveParams(pl.manifest, f.params);
+          for (const k in vals) inst.set(k, vals[k]); // settings may have moved on since it was built
+        } else {
+          try { inst = createEffect(this, pl, f.params); inst.pluginId = f.plugin; this.failed.delete(f.plugin); }
+          catch (e) { if (!pl.manifest.script || this.loaded.has(pl.id)) this.failed.set(f.plugin, e.message); }
+        }
       }
-      if (!inst) { ins.fx.push({ id: f.id, set() {}, refresh() {}, dispose() {} }); continue; }
+      if (!inst) { inst = { id: f.id, set() {}, refresh() {}, dispose() {} }; }
       inst.id = f.id; node.connect(inst.input); node = inst.output; ins.fx.push(inst);
     }
+    for (const f of old) if (f.input && !ins.fx.includes(f)) f.dispose();
+    for (const [a, b] of links) { try { a.disconnect(b); } catch (e) { /* already gone */ } }
     node.connect(ins.vol); ins.sig = sig;
     Object.defineProperty(ins, 'latency', { configurable: true, get() { return this.fx.reduce((a, f) => a + (f.latency || 0), 0); } });
   }

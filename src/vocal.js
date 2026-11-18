@@ -394,6 +394,9 @@ class SpecCore {
       const v = acc[p & mask]; acc[p & mask] = 0; ol[i] = v; if (or) or[i] = v;
     }
     this.eDone = p;
+    // absolute counters grow forever; `& mask` breaks once they pass 2^31, so slide everything back
+    // by a multiple of the ring size (the same amount for all three: only differences matter)
+    if (this.eDone > 1 << 29) { const d = 1 << 29; this.n -= d; this.sDone -= d; this.eDone -= d; }
   }
 }
 /* Noise removal: learns the static hiss and hum behind the voice and turns it down, while you sing or between phrases.

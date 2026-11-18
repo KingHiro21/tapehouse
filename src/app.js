@@ -1739,11 +1739,12 @@ function renderUpd() {
   const b = $('#updBtn'); if (!b) return;
   if (!DESKTOP) { b.hidden = true; return; }
   const busy = UPD.pct >= 0;
-  b.hidden = !(UPD.avail || busy || UPD.err);
+  b.hidden = false; // always there, so the button is findable even before any check has run
   b.classList.toggle('lit', !!UPD.avail && !busy);
   if (busy) { b.textContent = `↓ ${UPD.pct}%`; b.title = 'Downloading the update…'; }
   else if (UPD.avail) { b.textContent = `Update ${UPD.avail.version}`; b.title = `Tapehouse ${UPD.avail.version} is available (you have ${UPD.avail.current}) — click to install`; }
-  else if (UPD.err) { b.textContent = 'Update failed'; b.title = UPD.err; }
+  else if (UPD.err) { b.textContent = 'Update failed'; b.title = UPD.err + ' — click to try again'; }
+  else { b.textContent = `v${APP_VERSION}`; b.title = 'You’re up to date. Click to check again now.'; }
 }
 async function updCheck(auto = false) {
   if (!DESKTOP || UPD.pct >= 0) return;
@@ -1775,7 +1776,11 @@ if (DESKTOP) {
     else if (ev.kind === 'saved') { UPD.pct = -1; UPD.avail = null; renderUpd(); toast(`Saved ${ev.name} in Downloads — unzip it beside your current Tapehouse folder and run the new exe.`, { ms: 12000 }); }
     else if (ev.kind === 'error') { UPD.err = ev.message; UPD.pct = -1; renderUpd(); toast('The update didn’t finish: ' + ev.message, { kind: 'error' }); }
   });
-  setTimeout(() => { if (updAutoOn()) updCheck(true); }, 15000);
+  // the one check at startup can land before a release is published, so keep
+  // looking quietly: every hour, and every time you come back to the window
+  setTimeout(() => { if (updAutoOn()) updCheck(true); }, 8000);
+  setInterval(() => { if (updAutoOn() && UPD.pct < 0 && !UPD.avail && document.visibilityState === 'visible') updCheck(true); }, 60 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && updAutoOn() && UPD.pct < 0 && !UPD.avail) updCheck(true); });
 }
 
 async function openProjectSheet(opts = {}) {

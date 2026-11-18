@@ -1140,7 +1140,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.1';
+const APP_VERSION = '2.4.2';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -1894,17 +1894,34 @@ class Engine {
   }
   rebuildFx(i, sig) {
     const ins = this.inserts[i], m = this.P().mixer[i];
-    disc(ins.input); if (ins.pre) ins.input.connect(ins.pre); ins.fx.forEach(f => f.dispose()); ins.fx = [];
+    disc(ins.input); if (ins.pre) ins.input.connect(ins.pre);
+    /* Keep the effects that survive the change. A knob that turns a module on, a bypass toggle or even a preset
+       switch used to dispose and rebuild the whole chain, which clicked and dropped out while playing. Now running
+       effects are reconnected in place (their internal state — Tune's grains, reverb tails — keeps running) and
+       only the effects that are really gone are torn down. */
+    const old = ins.fx, keep = new Map(); old.forEach(f => { if (f.input) keep.set(f.id, f); });
+    const links = []; let prevOut = ins.input; // sever exactly the old chain links, so reused nodes lose their stale neighbours
+    for (const f of old) if (f.input) { links.push([prevOut, f.input]); prevOut = f.output; }
+    ins.fx = [];
     let node = ins.input;
     for (const f of m.fx) {
       const pl = plugins.get(f.plugin); let inst = null;
       if (pl && !f.bypass && pl.manifest.type === 'effect') {
-        try { inst = createEffect(this, pl, f.params); this.failed.delete(f.plugin); }
-        catch (e) { if (!pl.manifest.script || this.loaded.has(pl.id)) this.failed.set(f.plugin, e.message); }
+        const oldInst = keep.get(f.id);
+        if (oldInst && oldInst.pluginId === f.plugin) {
+          inst = oldInst;
+          const vals = effectiveParams(pl.manifest, f.params);
+          for (const k in vals) inst.set(k, vals[k]); // settings may have moved on since it was built
+        } else {
+          try { inst = createEffect(this, pl, f.params); inst.pluginId = f.plugin; this.failed.delete(f.plugin); }
+          catch (e) { if (!pl.manifest.script || this.loaded.has(pl.id)) this.failed.set(f.plugin, e.message); }
+        }
       }
-      if (!inst) { ins.fx.push({ id: f.id, set() {}, refresh() {}, dispose() {} }); continue; }
+      if (!inst) { inst = { id: f.id, set() {}, refresh() {}, dispose() {} }; }
       inst.id = f.id; node.connect(inst.input); node = inst.output; ins.fx.push(inst);
     }
+    for (const f of old) if (f.input && !ins.fx.includes(f)) f.dispose();
+    for (const [a, b] of links) { try { a.disconnect(b); } catch (e) { /* already gone */ } }
     node.connect(ins.vol); ins.sig = sig;
     Object.defineProperty(ins, 'latency', { configurable: true, get() { return this.fx.reduce((a, f) => a + (f.latency || 0), 0); } });
   }
@@ -2597,6 +2614,9 @@ class SpecCore {
       const v = acc[p & mask]; acc[p & mask] = 0; ol[i] = v; if (or) or[i] = v;
     }
     this.eDone = p;
+    // absolute counters grow forever; `& mask` breaks once they pass 2^31, so slide everything back
+    // by a multiple of the ring size (the same amount for all three: only differences matter)
+    if (this.eDone > 1 << 29) { const d = 1 << 29; this.n -= d; this.sDone -= d; this.eDone -= d; }
   }
 }
 /* Noise removal: learns the static hiss and hum behind the voice and turns it down, while you sing or between phrases.
@@ -4639,11 +4659,12 @@ function renderUpd() {
   const b = $('#updBtn'); if (!b) return;
   if (!DESKTOP) { b.hidden = true; return; }
   const busy = UPD.pct >= 0;
-  b.hidden = !(UPD.avail || busy || UPD.err);
+  b.hidden = false; // always there, so the button is findable even before any check has run
   b.classList.toggle('lit', !!UPD.avail && !busy);
   if (busy) { b.textContent = `↓ ${UPD.pct}%`; b.title = 'Downloading the update…'; }
   else if (UPD.avail) { b.textContent = `Update ${UPD.avail.version}`; b.title = `Tapehouse ${UPD.avail.version} is available (you have ${UPD.avail.current}) — click to install`; }
-  else if (UPD.err) { b.textContent = 'Update failed'; b.title = UPD.err; }
+  else if (UPD.err) { b.textContent = 'Update failed'; b.title = UPD.err + ' — click to try again'; }
+  else { b.textContent = `v${APP_VERSION}`; b.title = 'You’re up to date. Click to check again now.'; }
 }
 async function updCheck(auto = false) {
   if (!DESKTOP || UPD.pct >= 0) return;
@@ -4675,7 +4696,11 @@ if (DESKTOP) {
     else if (ev.kind === 'saved') { UPD.pct = -1; UPD.avail = null; renderUpd(); toast(`Saved ${ev.name} in Downloads — unzip it beside your current Tapehouse folder and run the new exe.`, { ms: 12000 }); }
     else if (ev.kind === 'error') { UPD.err = ev.message; UPD.pct = -1; renderUpd(); toast('The update didn’t finish: ' + ev.message, { kind: 'error' }); }
   });
-  setTimeout(() => { if (updAutoOn()) updCheck(true); }, 15000);
+  // the one check at startup can land before a release is published, so keep
+  // looking quietly: every hour, and every time you come back to the window
+  setTimeout(() => { if (updAutoOn()) updCheck(true); }, 8000);
+  setInterval(() => { if (updAutoOn() && UPD.pct < 0 && !UPD.avail && document.visibilityState === 'visible') updCheck(true); }, 60 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && updAutoOn() && UPD.pct < 0 && !UPD.avail) updCheck(true); });
 }
 
 async function openProjectSheet(opts = {}) {
