@@ -183,9 +183,13 @@ async function checkUpdate() {
   const rel = await fetchJson(`https://api.github.com/repos/${REPO}/releases/latest`);
   const version = String(rel.tag_name || '').replace(/^v/i, '');
   const update = verCmp(version, app.getVersion()) > 0;
+  // prefer the asset that matches the release version exactly: a release can carry stale-named
+  // files, and installing those ships the old app under a new banner
+  const esc = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pick = re => (rel.assets || []).find(a => re.test(a.name));
   // a portable copy updates from the zip; an installed one runs the NSIS setup
-  const asset = update ? ((isPortable && pick(/^Tapehouse-Portable-\d/i)) || pick(/^Tapehouse-Setup-\d/i) || null) : null;
+  const asset = update ? ((isPortable && (pick(new RegExp('^Tapehouse-Portable-' + esc + '\\.(?:exe|zip)$', 'i')) || pick(/^Tapehouse-Portable-\d/i)))
+    || (pick(new RegExp('^Tapehouse-Setup-' + esc + '\\.exe$', 'i')) || pick(/^Tapehouse-Setup-\d/i)) || null) : null;
   return { version, update, current: app.getVersion(), url: rel.html_url, asset };
 }
 function updateEvent(payload) { if (win && !win.isDestroyed()) win.webContents.send('tapehouse:update', payload); }
@@ -210,10 +214,24 @@ async function runUpdate(version) {
     // installed build: the silent NSIS setup closes this app itself, but leaving
     // first is politer and makes sure no write is held open
     updateEvent({ kind: 'installing' });
-    const child = spawn(dest, ['/S'], { detached: true, stdio: 'ignore' });
-    child.unref();
-    setTimeout(() => app.exit(0), 800);
-    return { installing: true };
+    // install from a copy: the freshly downloaded setup is a favourite antivirus lock target,
+    // and 'spawn EBUSY' ended the update at the very last step. Retry on busy-file errors.
+    let lastErr = null;
+    for (let a = 0; a < 5; a++) {
+      const runFrom = path.join(app.getPath('temp'), 'tapehouse-update', `setup-${Date.now()}.exe`);
+      try {
+        fs.copyFileSync(dest, runFrom);
+        const child = spawn(runFrom, ['/S'], { detached: true, stdio: 'ignore' });
+        child.unref();
+        setTimeout(() => app.exit(0), 800);
+        return { installing: true };
+      } catch (e) {
+        lastErr = e;
+        if (!['EBUSY', 'EPERM', 'ETXTBSY', 'EACCES'].includes(e.code)) break;
+        await new Promise(r => setTimeout(r, 1200));
+      }
+    }
+    throw new Error('the installer file was busy (usually antivirus). Try again in a minute, or install it yourself from ' + info.url);
   } finally { updating = false; }
 }
 async function menuUpdateCheck() {
