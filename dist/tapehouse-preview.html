@@ -1140,7 +1140,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4';
+const APP_VERSION = '2.4.1';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -5625,7 +5625,8 @@ const fmtL = v => Number.isFinite(v) ? (v < 0 ? '−' : '') + Math.abs(v).toFixe
 
 /* ---------- recording ---------- */
 const REC = { state: 'idle', armed: null, stream: null, src: null, node: null, sink: null, meter: null, mdata: null, mon: null, mode: null, workletReady: false,
-  capturing: false, pending: null, chunks: [], songStart: 0, startStep: 0, loop: null, mergeInto: null, stopAt: 0, err: null, errMsg: '', opening: false, devices: [], level: 0, clipUntil: 0, waiter: null };
+  capturing: false, pending: null, chunks: [], songStart: 0, startStep: 0, loop: null, mergeInto: null, stopAt: 0, err: null, errMsg: '', opening: false, devices: [], level: 0, clipUntil: 0, waiter: null,
+  retries: 0, retryTimer: 0, devTimer: 0, devWatch: false };
 const REC_WORKLET = `class R extends AudioWorkletProcessor{constructor(){super();this.on=false;this.buf=new Float32Array(8192);this.n=0;this.f0=0;
 this.port.onmessage=e=>{if(e.data==='on'){this.on=true;this.n=0}else if(e.data==='off'){this.flush();this.on=false;this.port.postMessage({done:1})}}}
 flush(){if(this.n){const o=this.buf.slice(0,this.n);this.port.postMessage({f:this.f0,d:o},[o.buffer]);this.n=0}}
@@ -5788,6 +5789,7 @@ function openMic(force) {
 }
 async function doOpenMic() {
   if (!ensureCtx()) return false;
+  watchMicDevices(); // from now on, a mic that appears by itself opens by itself
   if (usesDsp(project)) engine.loadDsp(); // so "Hear myself" runs Tune on the audio thread
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { REC.err = 'unsupported'; refreshRecPanel(); return false; }
   closeMic();
@@ -5800,9 +5802,10 @@ async function doOpenMic() {
     REC.opening = false; setAudioSession('playback');
     if (ui.rec.deviceId && (e.name === 'OverconstrainedError' || e.name === 'NotFoundError')) { ui.rec.deviceId = ''; saveRecPrefs(); return doOpenMic(); }
     REC.err = e.name === 'NotAllowedError' || e.name === 'SecurityError' ? 'blocked' : e.name === 'NotFoundError' ? 'nomic' : 'failed';
-    REC.errMsg = e.message || e.name; refreshRecPanel(); return false;
+    REC.errMsg = e.message || e.name; refreshRecPanel(); scheduleMicRetry(); return false;
   }
   REC.opening = false;
+  REC.retries = 0; clearTimeout(REC.retryTimer);
   if (REC.armed == null) { closeMic(); return false; }
   try {
     REC.src = ctx.createMediaStreamSource(REC.stream);
@@ -5921,6 +5924,30 @@ function monitorDelayMs(ins) {
 }
 async function listInputs() {
   try { const ds = await navigator.mediaDevices.enumerateDevices(); REC.devices = ds.filter(d => d.kind === 'audioinput'); refreshRecPanel(); } catch (e) { /* ok */ }
+}
+/* A mic can fail for a second (a USB mic hiccuping, another app like Discord grabbing it) and come right back.
+   Instead of leaving the error banner as a dead end until a human notices, retry in the background a few times
+   with growing pauses, and give up quietly after three — the banner stays honest, it just recovers first. */
+function scheduleMicRetry() {
+  clearTimeout(REC.retryTimer);
+  REC.retries = Math.min(REC.retries + 1, 4);
+  if (REC.retries > 3 || REC.err === 'blocked') return; // a permission refusal won't heal by itself
+  REC.retryTimer = setTimeout(() => {
+    if (REC.state !== 'idle' || REC.stream || REC.opening || REC.pending) return;
+    openMic(true).then(ok => { if (!ok && REC.err) scheduleMicRetry(); else if (ok) toast('Your mic is back.', { ms: 2500 }); });
+  }, 1500 * REC.retries);
+}
+/* Plugging a mic in (or Windows settling after a driver hiccup) should open it again on its own. */
+function watchMicDevices() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.addEventListener || REC.devWatch) return;
+  REC.devWatch = true;
+  navigator.mediaDevices.addEventListener('devicechange', () => {
+    clearTimeout(REC.devTimer);
+    REC.devTimer = setTimeout(async () => {
+      await listInputs();
+      if (REC.err && REC.state === 'idle' && !REC.stream && !REC.opening) { REC.retries = 0; openMic(true).then(ok => { if (ok && REC.err !== 'blocked') toast('Mic found — ready to record.', { ms: 3000 }); }); }
+    }, 900);
+  });
 }
 /* The one Record action (the button at the top, R, and the big button on the Vocal screen): records onto the armed track,
    or your vocal track (made with your last sound if there isn't one), from whatever screen you're on. */
