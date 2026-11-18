@@ -596,6 +596,7 @@ function renderTransport() {
   rb.setAttribute('aria-pressed', String(recording)); rb.setAttribute('aria-label', recording ? 'Stop recording (R)' : 'Record (R)'); const rl = rb.querySelector('.rl'); if (rl) rl.textContent = REC.state === 'count' ? 'Get ready' : recording ? 'Stop' : 'Record'; rb.title = recording ? 'Stop recording (R)' : 'Record your voice or an instrument (R)';
   $('#metroBtn').setAttribute('aria-pressed', String(!!ui.rec.metro));
   updateUndo();
+  renderUpd();
   const kr = $('#keyRoot'), ks = $('#keyScale');
   if (!kr.options.length) { kr.append(...KEY_NAMES.map((k, i) => el('option', { value: String(i) }, k))); ks.append(...Object.entries(SCALES).map(([id, sc]) => el('option', { value: id }, sc.label))); }
   kr.value = String(P.key); ks.value = P.scale;
@@ -1728,6 +1729,55 @@ async function backupLibrary() {
     t.done(); await saveFile('Tapehouse Library.zip', makeZip(files));
   } catch (e) { t.done(); toast(e.message, { kind: 'error' }); }
 }
+/* ---------- app updates (desktop shell) ---------- */
+/* The shell checks GitHub releases; this side decides when (auto on start unless
+   you turn it off) and always asks before anything downloads or installs. */
+const DESKTOP = !!(window.tapehouse && window.tapehouse.isShell);
+const UPD = { avail: null, pct: -1, err: '' };
+function updAutoOn() { try { return localStorage.getItem('th.updates.auto') !== 'off'; } catch (e) { return true; } }
+function renderUpd() {
+  const b = $('#updBtn'); if (!b) return;
+  if (!DESKTOP) { b.hidden = true; return; }
+  const busy = UPD.pct >= 0;
+  b.hidden = !(UPD.avail || busy || UPD.err);
+  b.classList.toggle('lit', !!UPD.avail && !busy);
+  if (busy) { b.textContent = `↓ ${UPD.pct}%`; b.title = 'Downloading the update…'; }
+  else if (UPD.avail) { b.textContent = `Update ${UPD.avail.version}`; b.title = `Tapehouse ${UPD.avail.version} is available (you have ${UPD.avail.current}) — click to install`; }
+  else if (UPD.err) { b.textContent = 'Update failed'; b.title = UPD.err; }
+}
+async function updCheck(auto = false) {
+  if (!DESKTOP || UPD.pct >= 0) return;
+  const r = await window.tapehouse.updateCheck();
+  if (!r) return;
+  if (r.error) { if (!auto) toast('Couldn’t check for updates: ' + r.error, { kind: 'error' }); return; }
+  if (r.update) {
+    UPD.avail = r; UPD.err = ''; renderUpd();
+    toast(`Tapehouse ${r.version} is out (you have ${r.current}).`, { action: { label: 'Install', run: updInstall }, ms: 20000 });
+  } else {
+    UPD.avail = null; UPD.err = ''; renderUpd();
+    if (!auto) toast(`You’re on the newest Tapehouse (${r.version}).`, { ms: 4000 });
+  }
+}
+async function updInstall() {
+  if (!UPD.avail || UPD.pct >= 0) return;
+  UPD.pct = 0; UPD.err = ''; renderUpd();
+  const r = await window.tapehouse.updateStart(UPD.avail.version);
+  if (r && r.error) { UPD.err = r.error; UPD.pct = -1; renderUpd(); toast('The update didn’t finish: ' + r.error, { kind: 'error' }); return; }
+  if (r && r.saved) {
+    UPD.pct = -1; UPD.avail = null; renderUpd();
+    toast(`Saved ${r.name} in Downloads — unzip it beside your current Tapehouse folder and run the new exe.`, { ms: 12000 });
+  }
+  // an installed build: the app exits by itself as the installer takes over
+}
+if (DESKTOP) {
+  window.tapehouse.onUpdate(ev => {
+    if (ev.kind === 'progress') { UPD.pct = ev.pct; renderUpd(); }
+    else if (ev.kind === 'saved') { UPD.pct = -1; UPD.avail = null; renderUpd(); toast(`Saved ${ev.name} in Downloads — unzip it beside your current Tapehouse folder and run the new exe.`, { ms: 12000 }); }
+    else if (ev.kind === 'error') { UPD.err = ev.message; UPD.pct = -1; renderUpd(); toast('The update didn’t finish: ' + ev.message, { kind: 'error' }); }
+  });
+  setTimeout(() => { if (updAutoOn()) updCheck(true); }, 15000);
+}
+
 async function openProjectSheet(opts = {}) {
   let list = []; try { list = await Store.all('projects'); } catch (e) { /* ok */ }
   list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -1747,6 +1797,11 @@ async function openProjectSheet(opts = {}) {
       el('button', { class: 'btn', onclick: () => { closeSheet(); openProjectObject(blankProject()); } }, 'Blank project'),
       el('button', { class: 'btn', onclick: () => { closeSheet(); openProjectObject(demoProject()); } }, 'Demo song'),
       el('button', { class: 'btn', onclick: () => { closeSheet(); const c = JSON.parse(JSON.stringify(project)); c.name = (project.name + ' copy').slice(0, 80); openProjectObject(c); } }, 'Duplicate this one'))),
+    DESKTOP ? el('section', {}, el('h3', {}, `Updates · you have v${APP_VERSION}`),
+      el('p', { class: 'muted' }, 'Checks GitHub for a newer Tapehouse when the app starts. Nothing downloads or installs until you press Install.'),
+      el('div', { class: 'btn-row' },
+        el('button', { class: 'btn', onclick: () => updCheck(false) }, 'Check for updates'),
+        el('button', { class: 'btn' + (updAutoOn() ? ' primary' : ''), onclick: e => { try { localStorage.setItem('th.updates.auto', updAutoOn() ? 'off' : 'on'); } catch (err) { /* ok */ } e.target.textContent = `Auto-check: ${updAutoOn() ? 'on' : 'off'}`; e.target.classList.toggle('primary', updAutoOn()); } }, `Auto-check: ${updAutoOn() ? 'on' : 'off'}`))) : null,
     el('section', {}, el('h3', {}, `Saved projects · ${list.length}`),
       list.length ? list.map(r => el('div', { class: 'proj-row' + (r.id === project.id ? ' cur' : '') },
         el('span', { class: 'nm' }, r.name), el('span', { class: 'dt' }, new Date(r.updatedAt || 0).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })),
@@ -1864,6 +1919,7 @@ function bindChrome() {
   $('#projName').addEventListener('change', e => mutate(P => { P.name = e.target.value.trim().slice(0, 80) || 'Untitled'; }, { render: false }));
   $('#patSelect').addEventListener('change', e => { project.currentPattern = e.target.value; ui.plBrush = e.target.value; ui.prSel = null; scheduleSave(); render(); });
   $('#undoBtn').addEventListener('click', undo); $('#redoBtn').addEventListener('click', redo);
+  $('#updBtn').addEventListener('click', () => (UPD.pct >= 0 ? null : UPD.avail ? updInstall() : updCheck(false)));
   $('#importBtn').addEventListener('click', () => pickFiles());
   $('#projBtn').addEventListener('click', openProjectSheet);
   $('#fileInput').addEventListener('change', e => { const files = [...e.target.files]; if (files.length) importFiles(files); });

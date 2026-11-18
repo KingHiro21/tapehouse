@@ -123,6 +123,9 @@ textarea{background:var(--well);border:1px solid var(--line-2);border-radius:8px
   .lb-btn .lb{display:none}
   .lb-btn{width:34px;padding:0}
 }
+/* the update chip in the top bar: amber when a release is waiting, percentage while downloading */
+.bar-right .upd{font:600 12px var(--font-mono);color:#2a1606;background:linear-gradient(#ffcf7d,#f0a644);border-color:#b8761f;box-shadow:0 0 10px rgb(255 178 74 / .4)}
+.bar-right .upd:not(.lit){color:inherit;background:none;box-shadow:none}
 @media (max-width:1100px) and (min-width:900px){.swing{display:none}#keyScale{width:122px}}
 @media (max-width:700px){
   .swing,#scope,.save-state,.master-meter{display:none}

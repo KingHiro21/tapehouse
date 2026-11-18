@@ -253,6 +253,9 @@ async function run() {
 
   const help = (calls.menu || []).find(item => item.label === 'Help');
   const about = help && help.submenu.find(item => item.label === 'About Tapehouse');
+  const updItem = help && help.submenu.find(item => item.label === 'Check for updates…');
+  check('Help menu offers checking for updates', !!updItem && typeof updItem.click === 'function');
+  check('updater IPC is wired for the page', !!calls.ipcHandlers && !!calls.ipcHandlers['updater:check'] && !!calls.ipcHandlers['updater:start']);
   if (about) {
     about.click();
     const shown = calls.dialogs[0];

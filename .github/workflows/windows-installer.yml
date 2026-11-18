@@ -50,13 +50,16 @@ jobs:
             smoke-failure.txt
           if-no-files-found: ignore
 
-  installer:
-    name: build NSIS installer
+  release:
+    name: build and publish the release
     runs-on: windows-latest
-    needs: check-shell
+    needs: [check-shell, smoke]
     # The checks and the smoke test run on every push; a 121 MB installer per push
-    # is not worth keeping, so this job waits for a tag or a manual run.
+    # is not worth keeping, so this job waits for a tag or a manual run. A tag also
+    # publishes a GitHub Release, which is what the in-app updater checks.
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -64,6 +67,14 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: package the portable app
+        shell: pwsh
+        run: |
+          npm run pack:win 2>&1 | Tee-Object -FilePath pack.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $v = (Get-Content package.json | ConvertFrom-Json).version
+          Compress-Archive -Path 'out/Tapehouse-win32-x64/*' -DestinationPath "Tapehouse-Portable-$v.zip"
+          echo "PORTABLE=Tapehouse-Portable-$v.zip" >> $env:GITHUB_ENV
       - name: build the installer
         shell: pwsh
         run: |
@@ -73,10 +84,22 @@ jobs:
         if: failure()
         shell: pwsh
         run: |
-          $tail = (Get-Content installer.log -Tail 30 -ErrorAction SilentlyContinue) -join ' | '
-          if ($tail) { echo "::error title=installer::$($tail -replace '%','%25')" }
-      - uses: actions/upload-artifact@v4
+          $tail = (Get-Content pack.log, installer.log -Tail 30 -ErrorAction SilentlyContinue) -join ' | '
+          if ($tail) { echo "::error title=release::$($tail -replace '%','%25')" }
+      - name: publish the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/Tapehouse-Setup-*.exe
+            ${{ env.PORTABLE }}
+          make_latest: true
+      - name: keep the builds for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
         with:
           name: Tapehouse-Setup
-          path: release/Tapehouse-Setup-*.exe
+          path: |
+            release/Tapehouse-Setup-*.exe
+            ${{ env.PORTABLE }}
           if-no-files-found: error

@@ -3,7 +3,9 @@
    The app itself stays exactly what dist/ builds; this process only serves that page
    from a secure app:// origin (so the mic, AudioWorklets and storage behave as they
    do in Chrome) and puts it in a native window. */
-const { app, BrowserWindow, Menu, dialog, protocol, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, protocol, session, shell, ipcMain } = require('electron');
+const https = require('node:https');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { portableDataDir } = require('./profile');
@@ -47,8 +49,7 @@ const DOWNLOAD_FILTERS = {
 
 /* Bounces, project bundles and library backups leave the page as downloads. Ask
    where each one goes with a name and filter that match the file, instead of
-   relying on Chromium's default routine; a dismissed dialog cancels the file. */
-function saveDownloads() {
+   relying on Chromium's default routine; a dismissed dialog cancels the file. */function saveDownloads() {
   session.defaultSession.on('will-download', (event, item, webContents) => {
     // Tell the page how the export ended, so it never claims a save that was
     // dismissed or landed somewhere other than Downloads.
@@ -118,6 +119,9 @@ function buildMenu() {
     {
       label: 'Help',
       submenu: [{
+        label: 'Check for updates…',
+        click: menuUpdateCheck,
+      }, {
         label: 'About Tapehouse',
         click: () => dialog.showMessageBox(win, {
           type: 'info',
@@ -130,6 +134,102 @@ function buildMenu() {
     },
   ]));
 }
+
+/* ---------- updates ---------- */
+/* Checks the GitHub releases for a newer Tapehouse and installs it. Nothing runs
+   without the user pressing Install: the page (or the Help menu) asks first, the
+   download shows its progress, and only then the NSIS installer takes over. A
+   portable copy can't replace its own running exe, so it saves the new zip into
+   Downloads and opens the folder instead. */
+const REPO = 'KingHiro21/tapehouse';
+const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR;
+const verCmp = (a, b) => { const pa = String(a).split('.'), pb = String(b).split('.'); for (let i = 0; i < 3; i++) { const x = +pa[i] || 0, y = +pb[i] || 0; if (x !== y) return x < y ? -1 : 1; } return 0; };
+
+function httpsGet(url, headers, onRes) {
+  return new Promise((resolve, reject) => {
+    const follow = (u, hops) => {
+      if (hops > 5) { reject(new Error('Too many redirects')); return; }
+      const req = https.get(u, { headers: { 'user-agent': 'Tapehouse-Updater', ...headers }, timeout: 20000 }, res => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode)) { res.resume(); follow(res.headers.location, hops + 1); return; }
+        res.on('error', reject);
+        onRes(res, resolve, reject);
+      });
+      req.on('timeout', () => req.destroy(new Error('The connection timed out')));
+      req.on('error', reject);
+    };
+    follow(url, 0);
+  });
+}
+function fetchJson(url) {
+  return httpsGet(url, { accept: 'application/vnd.github+json' }, (res, resolve, reject) => {
+    if (res.statusCode === 404) { res.resume(); reject(new Error('No published releases yet — the first one appears when a v… tag is pushed')); return; }
+    if (res.statusCode !== 200) { res.resume(); reject(new Error(`GitHub answered ${res.statusCode}`)); return; }
+    let body = ''; res.setEncoding('utf8'); res.on('data', c => body += c);
+    res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
+  });
+}
+function downloadTo(url, dest, onProgress) {
+  return httpsGet(url, {}, (res, resolve, reject) => {
+    if (res.statusCode !== 200) { res.resume(); reject(new Error(`The download answered ${res.statusCode}`)); return; }
+    const total = +res.headers['content-length'] || 0; let done = 0, last = 0;
+    const out = fs.createWriteStream(dest);
+    res.on('data', c => { done += c.length; if (onProgress && total && Date.now() - last > 250) { last = Date.now(); onProgress(done / total); } });
+    res.on('error', reject); out.on('error', reject);
+    out.on('finish', () => out.close(() => resolve(dest)));
+    res.pipe(out);
+  });
+}
+async function checkUpdate() {
+  const rel = await fetchJson(`https://api.github.com/repos/${REPO}/releases/latest`);
+  const version = String(rel.tag_name || '').replace(/^v/i, '');
+  const update = verCmp(version, app.getVersion()) > 0;
+  const pick = re => (rel.assets || []).find(a => re.test(a.name));
+  // a portable copy updates from the zip; an installed one runs the NSIS setup
+  const asset = update ? ((isPortable && pick(/^Tapehouse-Portable-\d/i)) || pick(/^Tapehouse-Setup-\d/i) || null) : null;
+  return { version, update, current: app.getVersion(), url: rel.html_url, asset };
+}
+function updateEvent(payload) { if (win && !win.isDestroyed()) win.webContents.send('tapehouse:update', payload); }
+let updating = false;
+async function runUpdate(version) {
+  if (updating) throw new Error('An update is already running');
+  const info = await checkUpdate(); // fresh asset URLs; a release can change under us
+  if (!info.update || info.version !== version || !info.asset) throw new Error('That update is no longer offered here — check the release page');
+  updating = true;
+  try {
+    const dir = path.join(app.getPath('temp'), 'tapehouse-update');
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, info.asset.name);
+    await downloadTo(info.asset.browser_download_url, dest, p => updateEvent({ kind: 'progress', pct: Math.round(p * 100) }));
+    if (isPortable) {
+      let shown = dest;
+      try { const zip = path.join(app.getPath('downloads'), info.asset.name); fs.copyFileSync(dest, zip); shown = zip; } catch (e) { /* temp copy is fine */ }
+      shell.showItemInFolder(shown);
+      updateEvent({ kind: 'saved', name: info.asset.name });
+      return { saved: true, name: info.asset.name };
+    }
+    // installed build: the silent NSIS setup closes this app itself, but leaving
+    // first is politer and makes sure no write is held open
+    updateEvent({ kind: 'installing' });
+    const child = spawn(dest, ['/S'], { detached: true, stdio: 'ignore' });
+    child.unref();
+    setTimeout(() => app.exit(0), 800);
+    return { installing: true };
+  } finally { updating = false; }
+}
+async function menuUpdateCheck() {
+  const parent = win && !win.isDestroyed() ? win : undefined;
+  try {
+    const info = await checkUpdate();
+    if (!info.update) { dialog.showMessageBox(parent, { type: 'info', title: 'Tapehouse', message: 'You’re up to date', detail: `Tapehouse ${app.getVersion()} is the newest release.`, buttons: ['OK'] }); return; }
+    const r = await dialog.showMessageBox(parent, { type: 'info', title: 'Tapehouse', message: `Tapehouse ${info.version} is available`, detail: `You have ${app.getVersion()}. The app restarts while the update installs.`, buttons: ['Install and restart', 'Later'], defaultId: 0, cancelId: 1 });
+    if (r.response !== 0) return;
+    await runUpdate(info.version).catch(e => dialog.showMessageBox(parent, { type: 'warning', title: 'Tapehouse', message: 'The update didn’t finish', detail: e.message, buttons: ['OK'] }));
+  } catch (e) {
+    dialog.showMessageBox(parent, { type: 'warning', title: 'Tapehouse', message: 'Couldn’t check for updates', detail: e.message, buttons: ['OK'] });
+  }
+}
+ipcMain.handle('updater:check', () => checkUpdate().catch(e => ({ error: e.message })));
+ipcMain.handle('updater:start', (e, version) => runUpdate(String(version || '')).catch(err => ({ error: err.message })));
 
 /* A project passed on the command line waits here until the page can take it. */
 function takeProjectArg(argv) {

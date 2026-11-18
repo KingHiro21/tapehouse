@@ -75,6 +75,7 @@ const app = {
   getVersion() { return version; },
   requestSingleInstanceLock() { return true; },
   quit() { calls.quit = true; },
+  exit() { calls.quit = true; calls.exited = true; },
   whenReady() {
     return Promise.resolve().then(() => { calls.ready = true; });
   },
@@ -113,6 +114,11 @@ const shell = {
   openPath() {},
 };
 
+const ipcMain = {
+  handlers: {},
+  handle(name, fn) { ipcMain.handlers[name] = fn; calls.ipcHandlers = ipcMain.handlers; },
+};
+
 module.exports = {
   app,
   BrowserWindow,
@@ -121,5 +127,6 @@ module.exports = {
   protocol,
   session,
   shell,
+  ipcMain,
   __calls: calls,
 };

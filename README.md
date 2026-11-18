@@ -35,6 +35,17 @@ on Windows — so build it on Windows, or on Linux/macOS with Wine installed.
 
 Needs Node 18+. `npm run build` (or `./build.sh`) still just writes `dist/`.
 
+### Updating the app (v2.4)
+
+The desktop app keeps itself current. On start it checks GitHub for a newer
+release (you can turn that off under **Project › Updates › Auto-check**, or check
+any time under **Help › Check for updates…**). When one is out, an amber chip
+appears in the top bar and a toast offers **Install**: nothing downloads until you
+press it. An installed app hands over to the new setup and restarts; a portable
+copy can't replace its own running exe, so it saves the new portable zip into
+Downloads and opens the folder — unzip it beside the old folder and run the new
+exe. Releases are published by CI whenever a `v…` tag is pushed.
+
 Projects save as `.tapehouse` bundles. The installer registers that extension, so
 double-clicking one opens it; a file dropped onto `Tapehouse.exe` (or passed to a
 second launch of an open app) opens in the window that is already running.
