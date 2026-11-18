@@ -1137,7 +1137,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.3.1';
+const APP_VERSION = '2.3.2';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -7272,18 +7272,28 @@ const SUITE_ARTISTS = [
   // punchy compressor last. The beat is degraded instead of the vocal, so the top end belongs to the voice (air 3) and
   // the space is a short plate, not a hall.
   { id: 'travis', name: 'Travis Scott', al: ['travis scott', 'travis', 'la flame'], s: { retune: 1, humanize: 0, presence: 1.5, air: 2.5, grit: 25, compress: 60, deess: 50, tamer: 40, width: 35, delay: 35, reverb: 40, size: 3.5, predelay: 35 }, ch: 'fet', time: 0.75, hard: true },
-  { id: 'posty', name: 'Post Malone', al: ['post malone', 'posty'], s: { retune: 12, humanize: 10, warmth: 1, presence: 0.5, air: 2, grit: 8, compress: 55, deess: 45, tamer: 35, width: 25, delay: 22, reverb: 30, size: 2.4 }, ch: 'vox', time: 0.5 },
+  { id: 'posty', name: 'Post Malone', al: ['post malone', 'posty'], s: { retune: 12, humanize: 10, warmth: 1, presence: 1, air: 2, grit: 8, compress: 55, deess: 45, tamer: 35, width: 15, delay: 22, reverb: 30, size: 2.4 }, ch: 'fet', time: 0.5 },
+  // Louis Bell (Universal Audio interview): 1176 for attack and roundness, Neve/API EQ, Auto-Tune used subtly so you
+  // don't hear it, Brigade Chorus on ad-libs only, and Inflator-style brightness — our Grit sat stands in for it. The
+  // doubles stay almost inaudible, like Kinelski's rule: if you can hear them, they're too much.
   { id: 'pop', name: 'Pop Smoke', al: ['pop smoke', 'popsmoke', 'woo'], s: { retune: 0, humanize: 0, warmth: 1.5, presence: 1, air: 0.5, grit: 15, compress: 65, deess: 40, tamer: 30, width: 10, delay: 10, reverb: 22, size: 1.6 }, ch: 'fet', time: 0.5, hard: true },
   { id: 'kanye', name: 'Kanye West', al: ['kanye west', 'kanye', 'ye '], s: { retune: 0, humanize: 5, warmth: 0.5, presence: 1.5, air: 2, grit: 10, compress: 60, deess: 45, tamer: 35, width: 20, delay: 12, reverb: 18, size: 1.8 }, ch: 'fet', time: 0.5, hard: true },
-  { id: 'posty', name: 'Post Malone', al: ['post malone', 'posty'], s: { retune: 12, humanize: 10, warmth: 1, presence: 0.5, air: 2, grit: 8, compress: 55, deess: 45, tamer: 35, width: 25, delay: 22, reverb: 30, size: 2.4 }, ch: 'vox', time: 0.5 },
   { id: 'juice', name: 'Juice WRLD', al: ['juice wrld', 'juice world', 'juicewrld'], s: { retune: 14, humanize: 25, flex: 0, warmth: -0.5, presence: 1.5, air: 2, grit: 10, compress: 55, deess: 45, tamer: 40, width: 28, delay: 15, reverb: 24, size: 1.5 }, ch: 'vox', time: 0.5, hard: true },
-  { id: 'billie', name: 'Billie Eilish', al: ['billie eilish', 'billie'], s: { retune: 35, humanize: 35, flex: 30, warmth: 1.5, air: 3, compress: 60, deess: 60, tamer: 40, width: 10, delay: 10, reverb: 18, size: 1.6 }, ch: 'opto', time: 0.5, natural: true },
+  { id: 'billie', name: 'Billie Eilish', al: ['billie eilish', 'billie'], s: { retune: 35, humanize: 35, flex: 30, warmth: 1.5, air: 2, compress: 50, deess: 60, tamer: 40, width: 10, delay: 10, reverb: 18, size: 1.6 }, ch: 'opto', time: 0.5, natural: true },
+  // Rob Kinelski (Sound On Sound / Waves): Pro-Q low cut, PuigChild 670 for gentle smoothing and colour, de-esser, a
+  // mid scoop, 1073, Vocal Rider — EQ that cuts and rarely boosts, compression that never gets aggressive, and a
+  // microshift you feel rather than hear.
   { id: 'ariana', name: 'Ariana Grande', al: ['ariana grande', 'ariana'], s: { retune: 25, humanize: 25, warmth: -0.5, presence: 1, air: 4.5, compress: 55, deess: 60, tamer: 45, width: 35, delay: 15, reverb: 32, size: 2.6 }, ch: 'opto', time: 0.5, natural: true },
-  { id: 'sza', name: 'SZA', al: ['sza'], s: { retune: 20, humanize: 20, warmth: 1, presence: 0.5, air: 3, compress: 50, deess: 50, tamer: 40, width: 22, delay: 20, reverb: 30, size: 2.8 }, ch: 'opto', time: 0.75, natural: true },
+  { id: 'sza', name: 'SZA', al: ['sza'], s: { retune: 20, humanize: 20, warmth: 1.5, presence: 0.5, air: 2.5, grit: 10, compress: 50, deess: 50, tamer: 40, width: 22, delay: 18, reverb: 26, size: 2 }, ch: 'clean', time: 0.75, natural: true },
+  // Rob Bisel (Sound On Sound, on “Kill Bill”): Auto-Tune Pro, Pro-C 2, Pro-Q 3, and the lead’s 2 s VintageVerb
+  // tail with saturation after it, so the space is warm and controlled; Little Radiator edge on the background
+  // parts “so it feels more sampled”. “SZA wants to be warm.”
   { id: 'frank', name: 'Frank Ocean', al: ['frank ocean'], s: { retune: 25, humanize: 30, warmth: 1.5, air: 2, grit: 5, compress: 45, deess: 45, tamer: 30, width: 15, delay: 18, reverb: 28, size: 2.4 }, ch: 'opto', time: 0.5, natural: true },
   { id: 'tpain', name: 'T-Pain', al: ['t-pain', 't pain', 'tpain'], s: { retune: 0, humanize: 0, presence: 1, air: 2, compress: 55, deess: 45, tamer: 30, width: 15, delay: 15, reverb: 20, size: 2 }, ch: 'fet', time: 0.5, hard: true },
   { id: 'future', name: 'Future', al: ['future'], s: { retune: 2, humanize: 0, presence: 1, air: 1.5, grit: 18, compress: 60, deess: 45, tamer: 35, width: 25, delay: 30, reverb: 30, size: 3 }, ch: 'fet', time: 0.5, hard: true },
-  { id: 'bruno', name: 'Bruno Mars', al: ['bruno mars', 'bruno'], s: { retune: 30, humanize: 25, warmth: 0.5, presence: 2, air: 2, compress: 60, deess: 50, tamer: 35, width: 15, delay: 12, reverb: 20, size: 1.8 }, ch: 'fet', time: 0.5, natural: true },
+  { id: 'bruno', name: 'Bruno Mars', al: ['bruno mars', 'bruno'], s: { retune: 30, humanize: 25, warmth: 0.5, presence: 2, air: 2, compress: 60, deess: 55, tamer: 35, width: 15, delay: 12, reverb: 20, size: 1.8 }, ch: 'fet', time: 0.5, natural: true },
+  // His FOH chain (Mix, 24K Magic tour): BSS 901 into a Distressor into a DerrEsser — FET character, heavy de-essing,
+  // dynamic performance kept intact. Light tune only, since his vocals are tuned sparingly.
 ];
 function suiteFresh(P, ins) {
   P.mixer[ins].fx = SUITE_ORDER.filter(r => !['eqm', 'gate', 'nc', 'deecho'].includes(r)).map(r => fxSlot(SUITE_DEF[r][0], { ...SUITE_DEF[r][1] }));
@@ -7949,11 +7959,11 @@ const SUITE_TARGETS = {
   weeknd: { lra: 5, sib: -10, tilt: [[200, 0], [350, -1], [700, 0], [3000, 0], [6000, 1], [10000, 2], [16000, 2]] },
   drake: { lra: 4, sib: -9, tilt: [[150, 0.5], [300, 1], [600, 0.5], [1500, 0.5], [4000, 0], [8000, -1], [14000, -1.5]] },
   travis: { lra: 4, sib: -8, tilt: [[300, -0.5], [1500, 0], [3000, 1.5], [6000, 1.5], [10000, 1.5], [16000, 1]] },
-  posty: { lra: 5, sib: -9, tilt: [[200, 0.5], [400, 0.5], [1000, 0], [2500, 0.5], [8000, 0.5], [14000, 1]] },
+  posty: { lra: 5, sib: -9, tilt: [[200, 0.5], [400, 0.5], [1200, 0], [2500, 1], [4500, 0.5], [9000, 0.5], [14000, 1]] },
   juice: { lra: 5, sib: -9, tilt: [[150, 0], [250, -1], [500, 0], [2500, 1], [3500, 1], [6500, 0.5], [12000, 0.5]] },
   billie: { lra: 7, sib: -11, tilt: [[120, 1], [250, 1.5], [500, 0.5], [2500, -1], [5000, -0.5], [9000, 0.5], [14000, 1]] },
   ariana: { lra: 6, sib: -10, tilt: [[250, -0.5], [500, -0.5], [2000, 0], [4000, 0.5], [8000, 2], [12000, 2.5], [16000, 2.5]] },
-  sza: { lra: 6, sib: -10, tilt: [[200, 0.5], [400, 0.5], [1500, 0], [5000, 0.5], [10000, 1.5], [16000, 1.5]] },
+  sza: { lra: 6, sib: -10, tilt: [[200, 0.5], [400, 0.5], [1500, 0], [3000, 0], [6000, 0.5], [10000, 1], [16000, 1]] },
   frank: { lra: 6, sib: -10, tilt: [[150, 0.5], [300, 1], [700, 0.5], [2500, 0], [6000, 0], [12000, 0.5]] },
   tpain: { lra: 4, sib: -9, tilt: [[500, 0], [1000, 1], [2000, 1.5], [3500, 1], [6000, 0.5], [12000, 0.5]] },
   future: { lra: 4, sib: -9, tilt: [[200, 0.5], [500, 0.5], [1200, 1], [2500, 0.5], [6000, -0.5], [12000, -1]] },
