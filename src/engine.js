@@ -7,7 +7,7 @@
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.3';
+const APP_VERSION = '2.4.4';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -776,16 +776,21 @@ class Engine {
       const pl = plugins.get(f.plugin); let inst = null;
       if (pl && !f.bypass && pl.manifest.type === 'effect') {
         const oldInst = keep.get(f.id);
-        if (oldInst && oldInst.pluginId === f.plugin) {
+        if (oldInst && oldInst.pluginId === f.plugin && !(oldInst.dspFallback && oldInst.dspFallback() && this.dsp === 'ready')) {
+          // a fallback (main-thread) effect never reuses: while the vocal DSP worklet was still loading it was
+          // built on a ScriptProcessor, which crackles the moment the UI does anything. Once the worklet is
+          // ready the effect must be rebuilt onto it — that upgrade is the whole point of the rebuild.
           inst = oldInst;
-          const vals = effectiveParams(pl.manifest, f.params);
-          for (const k in vals) inst.set(k, vals[k]); // settings may have moved on since it was built
+          try {
+            const vals = effectiveParams(pl.manifest, f.params);
+            for (const k in vals) inst.set(k, vals[k]); // settings may have moved on since it was built
+          } catch (e) { /* never let a settings push kill the chain */ }
         } else {
           try { inst = createEffect(this, pl, f.params); inst.pluginId = f.plugin; this.failed.delete(f.plugin); }
           catch (e) { if (!pl.manifest.script || this.loaded.has(pl.id)) this.failed.set(f.plugin, e.message); }
         }
       }
-      if (!inst) { inst = { id: f.id, set() {}, refresh() {}, dispose() {} }; }
+      if (!inst) { ins.fx.push({ id: f.id, set() {}, refresh() {}, dispose() {} }); continue; } // bypassed or failed: it sits in the list but carries no nodes
       inst.id = f.id; node.connect(inst.input); node = inst.output; ins.fx.push(inst);
     }
     for (const f of old) if (f.input && !ins.fx.includes(f)) f.dispose();

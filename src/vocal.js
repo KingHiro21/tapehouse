@@ -524,7 +524,7 @@ function tuneMask(P, which, root, smode) {
 function dspPrim(E, kind, makeCore, toParams) {
   const ac = E.ac, input = ac.createGain(), output = ac.createGain();
   let node = null, core = null, rep = null, last = {};
-  const B = 256, sr = ac.sampleRate;
+  const B = 1024, sr = ac.sampleRate; // fallback buffer: the main thread must service this, so give it slack
   const build = p => {
     if (E.dsp === 'ready') {
       try {
@@ -546,6 +546,7 @@ function dspPrim(E, kind, makeCore, toParams) {
   };
   return {
     input, output, probe() { return core ? (core.report ? core.report() : core.grDb !== undefined ? { gr: core.grDb } : null) : rep; },
+    dspFallback: () => !!core, // true while running on the main-thread ScriptProcessor instead of the audio-thread worklet
     get latency() { // what this effect delays the signal by, so audio clips can start early and stay on the beat
       if (!node) return 0;
       const own = kind === 'tune' ? (core ? core.L : TuneCore.latency(sr, last.live, last.voice)) : kind === 'limit' ? LimitCore.latency(sr)
