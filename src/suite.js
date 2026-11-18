@@ -749,7 +749,7 @@ function vsRecord(ins, m) {
       el('button', { class: 'vs-chip big' + (REC.mon ? ' lit' : ''), 'aria-pressed': String(!!REC.mon), title: REC.fbAuto && performance.now() - REC.fbAuto < 120000 ? 'Turned off after speaker feedback. Fix the volume (or use headphones), then press to hear yourself again.' : 'Hear yourself through the sound, with or without recording. Wear headphones.', onclick: () => suiteLive(ins) }, icon('phones'), REC.mon ? 'Hearing myself' : 'Hear myself'),
       tog('countIn', 'Count-in', 'One bar of clicks before recording starts'))));
   const opts = el('div', { class: 'vs-rec-opts' });
-  if (REC.stream) opts.append(el('div', { class: 'vss-mic' }, el('span', { class: 'lbl' }, 'Mic'), el('span', { class: 'in-meter' }, el('i', { id: 'inFill' })), el('span', { id: 'vssMicTxt', class: 'vs-hint' }, 'Sing to check your level'), el('span', { class: 'in-clip', id: 'inClip', hidden: true }, 'Too loud')));
+  if (REC.stream) opts.append(el('div', { class: 'vss-mic' }, el('span', { class: 'lbl' }, 'Mic'), el('span', { class: 'in-meter' }, el('i', { id: 'inFill' })), el('span', { id: 'vssMicTxt', class: 'vs-hint' }, 'Sing to check your level'), el('span', { class: 'in-clip', id: 'inClip', hidden: true }, 'Too loud'), el('span', { id: 'vsDelay', class: 'vs-hint mono' }, '')));
   else if (!REC.err) opts.append(el('span', { class: 'vs-hint' }, REC.opening ? 'Asking for your mic…' : 'The mic opens when you press Record or Hear myself.'));
   const latTxt = el('span', { class: 'vs-hint mono' }, `${ui.rec.latencyMs > 0 ? '+' : ''}${Math.round(ui.rec.latencyMs)} ms`);
   opts.append(...[
@@ -915,12 +915,19 @@ function suiteTick(ins) {
     const nb = $('#vsNote'), nd = $('#vsNeedle'), ns = $('#vsNoteSub');
     if (nb && map.tune) {
       const f = e.fx.find(x => x.id === map.tune.id), r = f && f.probe ? f.probe() : null;
+      if (map.tune.bypass) { nb.textContent = '– –'; nd.classList.remove('on'); nd.style.left = '50%'; $$('.vs-keys i.sing, .vs-keys i.land').forEach(k => k.classList.remove('sing', 'land')); if (ns) ns.textContent = 'Tune is off — turn it on to watch it work'; }
       if (r && r.v && r.t != null && (T.playing || REC.stream)) {
         const near = Math.round(r.m), off = clamp((r.m - near) * 100, -50, 50), kp = ((near % 12) + 12) % 12, tp = ((Math.round(r.t) % 12) + 12) % 12;
         $$('.vs-keys i').forEach(k => { k.classList.toggle('sing', +k.dataset.pc === kp); k.classList.toggle('land', +k.dataset.pc === tp && tp !== kp); });
         nb.textContent = noteName(near).replace(/-?\d+$/, ''); nd.style.left = (50 + off) + '%'; nd.classList.add('on'); nd.classList.toggle('ok', Math.abs(off) < 10);
         if (ns) ns.textContent = `${off >= 0 ? '+' : '−'}${Math.abs(Math.round(off))} ct, Tune lands it on ${noteName(r.t).replace(/-?\d+$/, '')}`;
       } else { nb.textContent = '– –'; nd.classList.remove('on'); nd.style.left = '50%'; $$('.vs-keys i.sing, .vs-keys i.land').forEach(k => k.classList.remove('sing', 'land')); if (ns) ns.textContent = T.playing || REC.stream ? 'Listening…' : 'Sing or play a vocal'; }
+    }
+    const dly = $('#vsDelay');
+    if (dly) {
+      const p = monitorDelayParts(ins), starting = engine && engine.dsp === 'loading';
+      const txt = p ? (starting ? `mouth → ears ≈ ${p.total} ms — fast engine still starting…` : `mouth → ears ≈ ${p.total} ms (${p.chain} sound · ${p.hw} card)`) : '';
+      if (dly.textContent !== txt) dly.textContent = txt;
     }
     const gb = $('#vsGr'), gbar = $('#vsGrBar');
     if (gb && map.comp && e) { // both compressors together, falling fast and recovering slowly so it can be read

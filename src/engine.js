@@ -7,7 +7,7 @@
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.6';
+const APP_VERSION = '2.4.7';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -627,6 +627,9 @@ class Engine {
   loadDsp() {
     if (this.dspP) return this.dspP;
     this.dsp = 'loading';
+    // a worklet module that never comes back would leave every effect on the slow main-thread fallback
+    // forever: call it failed after ten seconds so the interface says so, and still upgrade if it lands later
+    const slow = setTimeout(() => { if (this.dsp === 'loading') { this.dsp = 'failed'; console.warn('Vocal DSP worklet is slow to start, using the fallback'); this.sync(); } }, 10000);
     this.dspP = (async () => {
       try {
         if (!this.ac.audioWorklet || typeof AudioWorkletNode === 'undefined') throw new Error('AudioWorklet is not available');
@@ -634,6 +637,7 @@ class Engine {
         try { await this.ac.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
         this.dsp = 'ready'; this.loaded.add('#dsp');
       } catch (e) { this.dsp = 'failed'; console.warn('Vocal DSP worklet unavailable, using the fallback', e); }
+      clearTimeout(slow);
       if (!this.offline) this.sync();
     })();
     return this.dspP;
@@ -837,6 +841,9 @@ class Engine {
       g.setTargetAtTime(low, t, 0.004); g.setTargetAtTime(1, t + 0.035, 0.09);
     }
   }
+  /* The biggest look-ahead any vocal insert carries: while monitoring, the beat waits this long so the
+     delayed voice and the beat line up in the singer's headphones. */
+  chainLatency() { let m = 0; for (let i = 1; i < this.inserts.length; i++) { const l = this.inserts[i].latency || 0; if (l > m) m = l; } return m; }
   playClip(clip, track, t, offset, maxDur) {
     const buf = buffers.get(clip.ref); if (!buf) return;
     let off = offset + (+clip.offset || 0); if (off >= buf.duration) return;
@@ -844,7 +851,12 @@ class Engine {
     let dur = Math.min(maxDur, buf.duration - off); if (dur <= 0.01) return;
     // Tune needs look-ahead, so audio on its insert starts that much earlier and still lands on the beat.
     const lat = idx > 0 ? (ins.latency || 0) : 0;
-    if (lat > 0) {
+    const chain = this.lowLat ? this.chainLatency() : 0;
+    if (chain > lat) {
+      // Hear myself is on: the monitored voice comes back `chain` late, so the beat waits too and both
+      // line up in the singer's headphones. Sung takes then land on the true beat instead of early.
+      t += chain - lat;
+    } else if (lat > 0) {
       t -= lat; const minT = this.offline ? 0 : ac.currentTime;
       if (t < minT) { const d = minT - t; t = minT; off += d; dur -= d; if (dur <= 0.01 || off >= buf.duration) return; }
     }

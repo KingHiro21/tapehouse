@@ -330,10 +330,11 @@ function activeChain(ins) {
   const hit = Object.entries(CHAINS).find(([, c]) => c.fx.map(([pl]) => pl).join('|') === sig);
   return hit ? hit[0] : null;
 }
-function monitorDelayMs(ins) {
+function monitorDelayParts(ins) {
   const e = engine && engine.inserts[ins]; if (!e || !ctx) return null;
   let tr = 0; try { const st = REC.stream && REC.stream.getAudioTracks()[0].getSettings(); tr = st && Number.isFinite(st.latency) ? st.latency : 0; } catch (err) { /* ok */ }
-  return Math.round(((e.latency || 0) + (ctx.baseLatency || 0) + (ctx.outputLatency || 0) + tr) * 1000);
+  const chain = Math.round((e.latency || 0) * 1000), hw = Math.round(((ctx.baseLatency || 0) + (ctx.outputLatency || 0) + tr) * 1000);
+  return { chain, hw, total: chain + hw };
 }
 async function listInputs() {
   try { const ds = await navigator.mediaDevices.enumerateDevices(); REC.devices = ds.filter(d => d.kind === 'audioinput'); refreshRecPanel(); } catch (e) { /* ok */ }
@@ -391,7 +392,7 @@ async function startRecording() {
   renderTransport(); refreshRecPanel();
   await play({ lead, onStart: (t0, songStart) => {
     REC.songStart = songStart; startCapture();
-    if (lead) for (let k = 0; k < 4; k++) metroClick(t0 + k * beat, k === 0);
+    if (lead) { const d = engine && engine.lowLat ? engine.chainLatency() : 0; for (let k = 0; k < 4; k++) metroClick(t0 + k * beat + d, k === 0); }
   } });
 }
 async function stopRecording() {

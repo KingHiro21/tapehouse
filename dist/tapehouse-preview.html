@@ -1140,7 +1140,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.6';
+const APP_VERSION = '2.4.7';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -1760,6 +1760,9 @@ class Engine {
   loadDsp() {
     if (this.dspP) return this.dspP;
     this.dsp = 'loading';
+    // a worklet module that never comes back would leave every effect on the slow main-thread fallback
+    // forever: call it failed after ten seconds so the interface says so, and still upgrade if it lands later
+    const slow = setTimeout(() => { if (this.dsp === 'loading') { this.dsp = 'failed'; console.warn('Vocal DSP worklet is slow to start, using the fallback'); this.sync(); } }, 10000);
     this.dspP = (async () => {
       try {
         if (!this.ac.audioWorklet || typeof AudioWorkletNode === 'undefined') throw new Error('AudioWorklet is not available');
@@ -1767,6 +1770,7 @@ class Engine {
         try { await this.ac.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
         this.dsp = 'ready'; this.loaded.add('#dsp');
       } catch (e) { this.dsp = 'failed'; console.warn('Vocal DSP worklet unavailable, using the fallback', e); }
+      clearTimeout(slow);
       if (!this.offline) this.sync();
     })();
     return this.dspP;
@@ -1970,6 +1974,9 @@ class Engine {
       g.setTargetAtTime(low, t, 0.004); g.setTargetAtTime(1, t + 0.035, 0.09);
     }
   }
+  /* The biggest look-ahead any vocal insert carries: while monitoring, the beat waits this long so the
+     delayed voice and the beat line up in the singer's headphones. */
+  chainLatency() { let m = 0; for (let i = 1; i < this.inserts.length; i++) { const l = this.inserts[i].latency || 0; if (l > m) m = l; } return m; }
   playClip(clip, track, t, offset, maxDur) {
     const buf = buffers.get(clip.ref); if (!buf) return;
     let off = offset + (+clip.offset || 0); if (off >= buf.duration) return;
@@ -1977,7 +1984,12 @@ class Engine {
     let dur = Math.min(maxDur, buf.duration - off); if (dur <= 0.01) return;
     // Tune needs look-ahead, so audio on its insert starts that much earlier and still lands on the beat.
     const lat = idx > 0 ? (ins.latency || 0) : 0;
-    if (lat > 0) {
+    const chain = this.lowLat ? this.chainLatency() : 0;
+    if (chain > lat) {
+      // Hear myself is on: the monitored voice comes back `chain` late, so the beat waits too and both
+      // line up in the singer's headphones. Sung takes then land on the true beat instead of early.
+      t += chain - lat;
+    } else if (lat > 0) {
       t -= lat; const minT = this.offline ? 0 : ac.currentTime;
       if (t < minT) { const d = minT - t; t = minT; off += d; dur -= d; if (dur <= 0.01 || off >= buf.duration) return; }
     }
@@ -2710,7 +2722,7 @@ class THTune extends AudioWorkletProcessor {
     const i = ins[0], o = outs[0], a = i && i[0], b = i && i[1], L = o[0].length; let m = this.m; if (m.length !== L) m = this.m = new Float32Array(L);
     if (a) { if (b) for (let k = 0; k < L; k++) m[k] = (a[k] + b[k]) * 0.5; else m.set(a); } else m.fill(0);
     this.c.process(m, o[0], L); for (let ch = 1; ch < o.length; ch++) o[ch].set(o[0]);
-    if (this.rep && ++this.k >= 16) { this.k = 0; this.port.postMessage(this.c.report()); }
+    if (this.rep && ++this.k >= 8) { this.k = 0; this.port.postMessage(this.c.report()); }
     return true;
   }
 }
@@ -2758,7 +2770,7 @@ function tuneMask(P, which, root, smode) {
 function dspPrim(E, kind, makeCore, toParams) {
   const ac = E.ac, input = ac.createGain(), output = ac.createGain();
   let node = null, core = null, coreLive = false, rep = null, last = {};
-  const B = 1024, sr = ac.sampleRate; // fallback buffer: the main thread must service this, so give it slack
+  const B = 512, sr = ac.sampleRate; // fallback buffer: main-thread serviced, so balance crackle vs delay (10.7 ms per effect)
   const build = p => {
     if (E.dsp === 'ready') {
       try {
@@ -5962,10 +5974,11 @@ function activeChain(ins) {
   const hit = Object.entries(CHAINS).find(([, c]) => c.fx.map(([pl]) => pl).join('|') === sig);
   return hit ? hit[0] : null;
 }
-function monitorDelayMs(ins) {
+function monitorDelayParts(ins) {
   const e = engine && engine.inserts[ins]; if (!e || !ctx) return null;
   let tr = 0; try { const st = REC.stream && REC.stream.getAudioTracks()[0].getSettings(); tr = st && Number.isFinite(st.latency) ? st.latency : 0; } catch (err) { /* ok */ }
-  return Math.round(((e.latency || 0) + (ctx.baseLatency || 0) + (ctx.outputLatency || 0) + tr) * 1000);
+  const chain = Math.round((e.latency || 0) * 1000), hw = Math.round(((ctx.baseLatency || 0) + (ctx.outputLatency || 0) + tr) * 1000);
+  return { chain, hw, total: chain + hw };
 }
 async function listInputs() {
   try { const ds = await navigator.mediaDevices.enumerateDevices(); REC.devices = ds.filter(d => d.kind === 'audioinput'); refreshRecPanel(); } catch (e) { /* ok */ }
@@ -6023,7 +6036,7 @@ async function startRecording() {
   renderTransport(); refreshRecPanel();
   await play({ lead, onStart: (t0, songStart) => {
     REC.songStart = songStart; startCapture();
-    if (lead) for (let k = 0; k < 4; k++) metroClick(t0 + k * beat, k === 0);
+    if (lead) { const d = engine && engine.lowLat ? engine.chainLatency() : 0; for (let k = 0; k < 4; k++) metroClick(t0 + k * beat + d, k === 0); }
   } });
 }
 async function stopRecording() {
@@ -7819,7 +7832,7 @@ function vsRecord(ins, m) {
       el('button', { class: 'vs-chip big' + (REC.mon ? ' lit' : ''), 'aria-pressed': String(!!REC.mon), title: REC.fbAuto && performance.now() - REC.fbAuto < 120000 ? 'Turned off after speaker feedback. Fix the volume (or use headphones), then press to hear yourself again.' : 'Hear yourself through the sound, with or without recording. Wear headphones.', onclick: () => suiteLive(ins) }, icon('phones'), REC.mon ? 'Hearing myself' : 'Hear myself'),
       tog('countIn', 'Count-in', 'One bar of clicks before recording starts'))));
   const opts = el('div', { class: 'vs-rec-opts' });
-  if (REC.stream) opts.append(el('div', { class: 'vss-mic' }, el('span', { class: 'lbl' }, 'Mic'), el('span', { class: 'in-meter' }, el('i', { id: 'inFill' })), el('span', { id: 'vssMicTxt', class: 'vs-hint' }, 'Sing to check your level'), el('span', { class: 'in-clip', id: 'inClip', hidden: true }, 'Too loud')));
+  if (REC.stream) opts.append(el('div', { class: 'vss-mic' }, el('span', { class: 'lbl' }, 'Mic'), el('span', { class: 'in-meter' }, el('i', { id: 'inFill' })), el('span', { id: 'vssMicTxt', class: 'vs-hint' }, 'Sing to check your level'), el('span', { class: 'in-clip', id: 'inClip', hidden: true }, 'Too loud'), el('span', { id: 'vsDelay', class: 'vs-hint mono' }, '')));
   else if (!REC.err) opts.append(el('span', { class: 'vs-hint' }, REC.opening ? 'Asking for your mic…' : 'The mic opens when you press Record or Hear myself.'));
   const latTxt = el('span', { class: 'vs-hint mono' }, `${ui.rec.latencyMs > 0 ? '+' : ''}${Math.round(ui.rec.latencyMs)} ms`);
   opts.append(...[
@@ -7985,12 +7998,19 @@ function suiteTick(ins) {
     const nb = $('#vsNote'), nd = $('#vsNeedle'), ns = $('#vsNoteSub');
     if (nb && map.tune) {
       const f = e.fx.find(x => x.id === map.tune.id), r = f && f.probe ? f.probe() : null;
+      if (map.tune.bypass) { nb.textContent = '– –'; nd.classList.remove('on'); nd.style.left = '50%'; $$('.vs-keys i.sing, .vs-keys i.land').forEach(k => k.classList.remove('sing', 'land')); if (ns) ns.textContent = 'Tune is off — turn it on to watch it work'; }
       if (r && r.v && r.t != null && (T.playing || REC.stream)) {
         const near = Math.round(r.m), off = clamp((r.m - near) * 100, -50, 50), kp = ((near % 12) + 12) % 12, tp = ((Math.round(r.t) % 12) + 12) % 12;
         $$('.vs-keys i').forEach(k => { k.classList.toggle('sing', +k.dataset.pc === kp); k.classList.toggle('land', +k.dataset.pc === tp && tp !== kp); });
         nb.textContent = noteName(near).replace(/-?\d+$/, ''); nd.style.left = (50 + off) + '%'; nd.classList.add('on'); nd.classList.toggle('ok', Math.abs(off) < 10);
         if (ns) ns.textContent = `${off >= 0 ? '+' : '−'}${Math.abs(Math.round(off))} ct, Tune lands it on ${noteName(r.t).replace(/-?\d+$/, '')}`;
       } else { nb.textContent = '– –'; nd.classList.remove('on'); nd.style.left = '50%'; $$('.vs-keys i.sing, .vs-keys i.land').forEach(k => k.classList.remove('sing', 'land')); if (ns) ns.textContent = T.playing || REC.stream ? 'Listening…' : 'Sing or play a vocal'; }
+    }
+    const dly = $('#vsDelay');
+    if (dly) {
+      const p = monitorDelayParts(ins), starting = engine && engine.dsp === 'loading';
+      const txt = p ? (starting ? `mouth → ears ≈ ${p.total} ms — fast engine still starting…` : `mouth → ears ≈ ${p.total} ms (${p.chain} sound · ${p.hw} card)`) : '';
+      if (dly.textContent !== txt) dly.textContent = txt;
     }
     const gb = $('#vsGr'), gbar = $('#vsGrBar');
     if (gb && map.comp && e) { // both compressors together, falling fast and recovering slowly so it can be read

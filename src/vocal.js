@@ -485,7 +485,7 @@ class THTune extends AudioWorkletProcessor {
     const i = ins[0], o = outs[0], a = i && i[0], b = i && i[1], L = o[0].length; let m = this.m; if (m.length !== L) m = this.m = new Float32Array(L);
     if (a) { if (b) for (let k = 0; k < L; k++) m[k] = (a[k] + b[k]) * 0.5; else m.set(a); } else m.fill(0);
     this.c.process(m, o[0], L); for (let ch = 1; ch < o.length; ch++) o[ch].set(o[0]);
-    if (this.rep && ++this.k >= 16) { this.k = 0; this.port.postMessage(this.c.report()); }
+    if (this.rep && ++this.k >= 8) { this.k = 0; this.port.postMessage(this.c.report()); }
     return true;
   }
 }
@@ -533,7 +533,7 @@ function tuneMask(P, which, root, smode) {
 function dspPrim(E, kind, makeCore, toParams) {
   const ac = E.ac, input = ac.createGain(), output = ac.createGain();
   let node = null, core = null, coreLive = false, rep = null, last = {};
-  const B = 1024, sr = ac.sampleRate; // fallback buffer: the main thread must service this, so give it slack
+  const B = 512, sr = ac.sampleRate; // fallback buffer: main-thread serviced, so balance crackle vs delay (10.7 ms per effect)
   const build = p => {
     if (E.dsp === 'ready') {
       try {
