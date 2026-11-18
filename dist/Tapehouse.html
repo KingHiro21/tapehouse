@@ -1141,7 +1141,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.5';
+const APP_VERSION = '2.4.6';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -7444,6 +7444,12 @@ const SUITE_ARTISTS = [
 function suiteFresh(P, ins) {
   P.mixer[ins].fx = SUITE_ORDER.filter(r => !['eqm', 'gate', 'nc', 'deecho'].includes(r)).map(r => fxSlot(SUITE_DEF[r][0], { ...SUITE_DEF[r][1] }));
 }
+/* Wipe the fit state (tone match, report, auto-match timer) so a fresh preset starts clean. */
+function suiteFreshMatch(ins) {
+  const m = project.mixer[ins]; if (!m) return;
+  clearTimeout(SVM.auto); SVM.token++; ui.vsM = null;
+  delete m.match; delete m.vsMatch;
+}
 function suiteApplyArtist(P, ins, a) {
   if (a.chain) { P.mixer[ins].fx = CHAINS[a.chain].fx.map(([pl, params]) => fxSlot(pl, { ...params })); return; }
   suiteFresh(P, ins);
@@ -7576,7 +7582,7 @@ function suiteRun(ins, ops) {
   pushUndo();
   const P = project, m = P.mixer[ins];
   for (const o of work) {
-    if (o.reset) { suiteFresh(P, ins); delete m.match; said.push('Reset to a clean chain'); }
+    if (o.reset) { suiteFresh(P, ins); suiteFreshMatch(ins); said.push('Reset to a clean chain'); }
     if (o.artist) { const a = SUITE_ARTISTS.find(x => x.id === o.artist); suiteApplyArtist(P, ins, a); delete m.match; delete m.vsMatch; m.vsPreset = a.name + ' style'; m.vsTarget = a.id; delete m.vsMod; said.push(`Loaded my starting point for ${a.name}`); }
     if (o.preset && CHAINS[o.preset]) { m.fx = CHAINS[o.preset].fx.map(([pl, params]) => fxSlot(pl, { ...params })); m.vsTarget = o.preset; delete m.vsMatch; said.push(`Loaded ${CHAINS[o.preset].label}`); }
     if (o.key) { suiteEnsure(P, ins, ['tune']); const tf = suiteClassify(m.fx).tune; tf.params.root = o.key.root; tf.params.smode = SCALES[o.key.mode] ? o.key.mode : 'major'; tf.bypass = false; said.push(`Tune snaps to ${suiteKeyName(o.key.root, tf.params.smode)} ${(SCALES[tf.params.smode] || {}).label || tf.params.smode}`); }
@@ -7710,6 +7716,7 @@ function renderVocal(v) {
       el('button', { class: 'vs-key', 'aria-label': 'Next preset', onclick: () => stepPreset(1) }, '›')),
     el('div', { class: 'vs-util' },
       el('button', { class: 'vs-key wide', title: 'Save these settings as your own preset', onclick: () => { ui.vsSaving = !ui.vsSaving; renderView(); } }, 'Save'),
+      el('button', { class: 'vs-key wide', title: 'Back to the app default sound: stock preset, no tone match, no tweaks', onclick: () => { suiteLoadPreset(ins, suiteDefaultPreset()); suiteFreshMatch(ins); renderView(); toast('Back to the default sound. Undo brings your tweaks back.'); } }, 'Default'),
       el('button', { class: 'vs-key wide' + (allOff ? ' lit' : ''), 'aria-pressed': String(!!allOff), title: 'Bypass every effect to compare with your raw voice', onclick: () => mutate(P => { P.mixer[ins].fx.forEach(f => { f.bypass = !allOff; }); }) }, 'Bypass')));
   const saving = ui.vsSaving ? el('form', { class: 'vs-save', onsubmit: async e => {
     e.preventDefault(); const name = (e.target.elements.n.value || '').trim().slice(0, 40); if (!name) return;
@@ -8170,7 +8177,15 @@ function suiteApplyProfileTune(ins) {
   const tf = suiteClassify(m.fx).tune; if (!tf || tf.bypass) return;
   const ch = { voice: lmVoiceType(p.a) };
   const drift = suiteDrift(p.a, { params: { scale: tf.params.scale || 'key', root: tf.params.root == null ? -1 : tf.params.root, smode: tf.params.smode || 'minor' } });
-  if (drift != null && drift > 25) ch.retune = Math.round(clamp((+tf.params.retune || 20) * Math.pow(25 / drift, 1.3), 6, 40));
+  if (drift != null && drift >= 12) {
+    // presets written for pros who sing in tune barely correct a voice that drifts: pull the speed up
+    // (and the wobble-keeping humanize down) in proportion to how far off you actually sing
+    ch.retune = Math.round(clamp(360 / Math.max(drift, 12), 8, 30));
+    if (drift >= 20) {
+      ch.humanize = +clamp((+tf.params.humanize || 0.2) * 0.5, 0, 0.4).toFixed(2);
+      ch.flex = +clamp((+tf.params.flex || 0) * 0.5, 0, 0.5).toFixed(2);
+    }
+  }
   for (const k in ch) if (tf.params[k] !== ch[k]) { tf.params[k] = ch[k]; if (engine) engine.setFxParam(ins, tf.id, k, ch[k]); }
   changed({ render: false });
 }
@@ -8312,8 +8327,12 @@ async function suiteMatch(ins, opts = {}) {
       }
       const tf = map.tune && !map.tune.bypass ? map.tune : null, drift = suiteDrift(a, tf);
       if (tf && drift != null) {
-        const r0 = +tf.params.retune;
-        if (drift > 25 && r0 > 10) { const r1 = Math.round(clamp(r0 * Math.pow(25 / drift, 1.3), 8, r0)); if (r1 < r0 - 2) { tf.params.retune = r1; tf.params.humanize = +clamp((+tf.params.humanize || 0) * 0.7, 0, 1).toFixed(2); did.push(`You drift about ${Math.round(drift)} cents off the notes, so Tune pulls a bit faster (${r0} → ${r1} ms) to land you on pitch like ${tg.label}`); } }
+        const r0 = +tf.params.retune, r1 = Math.round(clamp(360 / Math.max(drift, 12), 8, 30));
+        if (drift >= 12 && r0 > r1 + 2) {
+          tf.params.retune = r1;
+          if (drift >= 20) { tf.params.humanize = +clamp((+tf.params.humanize || 0.2) * 0.5, 0, 0.4).toFixed(2); tf.params.flex = +clamp((+tf.params.flex || 0) * 0.5, 0, 0.5).toFixed(2); }
+          did.push(`You drift about ${Math.round(drift)} cents off the notes and this preset is tuned for someone who doesn’t, so Tune now pulls in ${r1} ms instead of ${r0} ms (and keeps less of the wobble) — that’s the correction you can actually hear`);
+        }
         else if (drift <= 12 && r0 <= 10 && !tg.artist) did.push(`You’re within ${Math.round(drift)} cents of the notes: nice and in tune`);
       }
       suiteEnsure(Q, ins, ['eqm']); map = suiteClassify(fx);
@@ -8327,8 +8346,11 @@ async function suiteMatch(ins, opts = {}) {
       let lowEx = 0, nLow = 0; LM_BANDS.forEach((f, i) => { if (f >= 60 && f <= 130 && valid[i]) { lowEx += ys[i] - ts[i]; nLow++; } }); lowEx = nLow ? lowEx / nLow : 0;
       let base = out0.curve;
       if (lowEx > 6 && a.f0) {
-        const lc = Math.round(clamp(a.f0.lo * (lowEx > 12 ? 1.15 : 1), lc0, 140));
-        if (lc >= lc0 + 5) { eqm.params.lowcut = lc; base = out0.curve.map((v, i) => v + lmBiquadDb('highpass', lc, 0.71, 0, LM_BANDS[i]) - lmBiquadDb('highpass', lc0, 0.71, 0, LM_BANDS[i])); did.push(`Low cut up to ${lc} Hz: singing close to the mic adds boom that ${tg.label}’s records don’t have, and it leaves room for the 808`); }
+        // never cut into the singer’s own fundamental: on a low voice (E2–E3) a 130 Hz cut eats the note itself
+        const plo = (suiteVoiceProfile && suiteVoiceProfile.a && suiteVoiceProfile.a.f0 && suiteVoiceProfile.a.f0.lo) || a.f0.lo;
+        const cap = Math.max(70, Math.round(plo * 0.92)); // stay under the lowest note they sing
+        const lc = Math.round(clamp(Math.min(a.f0.lo * (lowEx > 12 ? 1.15 : 1), cap), lc0, 140));
+        if (lc >= lc0 + 5) { eqm.params.lowcut = lc; base = out0.curve.map((v, i) => v + lmBiquadDb('highpass', lc, 0.71, 0, LM_BANDS[i]) - lmBiquadDb('highpass', lc0, 0.71, 0, LM_BANDS[i])); did.push(`Low cut up to ${lc} Hz: singing close to the mic adds boom below your range that ${tg.label}’s records don’t have, and it leaves room for the 808`); }
       }
       let full = lmFitEq(suiteDesired(tg.curve, base, 1, valid, mel));
       const amount = m.vsMatch && Number.isFinite(+m.vsMatch.amount) ? +m.vsMatch.amount : 1;
