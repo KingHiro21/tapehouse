@@ -41,4 +41,7 @@ contextBridge.exposeInMainWorld('tapehouse', {
   updateCheck: () => ipcRenderer.invoke('updater:check'),
   updateStart: version => ipcRenderer.invoke('updater:start', version),
   onUpdate: cb => { updateHandlers.push(cb); },
+  /* The vocal DSP worklet is served on localhost by the shell: blob URLs hang
+     addModule on some Windows machines, and the app:// loader hangs worse. */
+  dspUrl: () => ipcRenderer.invoke('dsp:url'),
 });

@@ -20,7 +20,7 @@ const APP_ORIGIN = 'app://tapehouse';
 const portableDir = process.argv.some(arg => arg.startsWith('--user-data-dir')) ? null : portableDataDir();
 if (portableDir) app.setPath('userData', portableDir);
 
-protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true } }]);
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, codeCache: true } }]);
 
 // A studio should not need a click to start its audio clock.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -230,6 +230,24 @@ async function menuUpdateCheck() {
 }
 ipcMain.handle('updater:check', () => checkUpdate().catch(e => ({ error: e.message })));
 ipcMain.handle('updater:start', (e, version) => runUpdate(String(version || '')).catch(err => ({ error: err.message })));
+/* The vocal DSP worklet over localhost: the one module loader that never hangs.
+   Bound to 127.0.0.1 with a random port, serves exactly one file. */
+let dspServer = null, dspUrl = '';
+function startDspServer() {
+  if (dspServer) return;
+  const http = require('http');
+  dspServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+    try { res.end(fs.readFileSync(path.join(WEB_DIR, 'Tapehouse-dsp.js'))); } catch (e) { res.end(''); }
+  });
+  dspServer.on('error', () => { /* port trouble: the renderer falls back to the blob */ });
+  dspServer.listen(0, '127.0.0.1', () => { dspUrl = `http://127.0.0.1:${dspServer.address().port}/Tapehouse-dsp.js`; });
+}
+ipcMain.handle('dsp:url', () => new Promise(res => {
+  if (dspUrl) return res(dspUrl);
+  startDspServer();
+  let n = 0; const poll = setInterval(() => { if (dspUrl || n++ > 20) { clearInterval(poll); res(dspUrl); } }, 100);
+}));
 
 /* A project passed on the command line waits here until the page can take it. */
 function takeProjectArg(argv) {

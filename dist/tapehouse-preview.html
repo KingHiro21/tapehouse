@@ -1569,8 +1569,10 @@ function createEffect(E, pl, overrides) {
   let n = input; for (const p of prims) { n.connect(p.input); n = p.output; } n.connect(output);
   const apply = () => prims.forEach((p, k) => p.apply(resolveT(m.graph[k], vals)));
   apply();
+  const dsp = prims.find(p => p.dspFallback); // forward the fallback marker, so the engine can upgrade this effect
   return { input, output, set(id, v) { vals[id] = v; apply(); }, refresh: apply, dispose() { disc(input, output); prims.forEach(p => p.dispose()); },
-    get latency() { return prims.reduce((a, p) => a + (p.latency || 0), 0); }, probe() { const p = prims.find(x => x.probe); return p ? p.probe() : null; } };
+    get latency() { return prims.reduce((a, p) => a + (p.latency || 0), 0); }, probe() { const p = prims.find(x => x.probe); return p ? p.probe() : null; },
+    dspFallback: dsp ? dsp.dspFallback : null };
 }
 
 /* ---------- sample buffers ---------- */
@@ -1760,17 +1762,36 @@ class Engine {
   loadDsp() {
     if (this.dspP) return this.dspP;
     this.dsp = 'loading';
-    // a worklet module that never comes back would leave every effect on the slow main-thread fallback
-    // forever: call it failed after ten seconds so the interface says so, and still upgrade if it lands later
-    const slow = setTimeout(() => { if (this.dsp === 'loading') { this.dsp = 'failed'; console.warn('Vocal DSP worklet is slow to start, using the fallback'); this.sync(); } }, 10000);
+    if (!this.ac.audioWorklet || typeof AudioWorkletNode === 'undefined') { this.dsp = 'failed'; return Promise.resolve(); }
+    // Blob URLs hang addModule on some Windows machines, so the worklet is also shipped as a real file
+    // next to the page (same origin): the file is tried first, the blob after it, and the whole
+    // attempt is retried a few times before the app admits the fallback engine.
     this.dspP = (async () => {
-      try {
-        if (!this.ac.audioWorklet || typeof AudioWorkletNode === 'undefined') throw new Error('AudioWorklet is not available');
-        const url = URL.createObjectURL(new Blob([dspModule()], { type: 'text/javascript' }));
-        try { await this.ac.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
-        this.dsp = 'ready'; this.loaded.add('#dsp');
-      } catch (e) { this.dsp = 'failed'; console.warn('Vocal DSP worklet unavailable, using the fallback', e); }
-      clearTimeout(slow);
+      let last = null;
+      const attempt = href => new Promise((res, rej) => {
+        const t = setTimeout(() => rej(new Error('addModule timed out')), 3000); // a hang must never block the next candidate
+        this.ac.audioWorklet.addModule(href).then(() => { clearTimeout(t); res(); }, e => { clearTimeout(t); rej(e); });
+      });
+      // localhost URL served by the shell (desktop), then the blob. A hanging candidate is raced out,
+      // because a stuck addModule queues every later one on the same AudioWorklet.
+      let local = null;
+      if (window.tapehouse && window.tapehouse.dspUrl) { try { local = await window.tapehouse.dspUrl(); } catch (e) { /* ok */ } }
+      for (let round = 0; round < 3; round++) {
+        for (const useLocal of [true, false]) {
+          let href = null;
+          try {
+            if (useLocal && !local) continue;
+            href = useLocal ? local : URL.createObjectURL(new Blob([dspModule()], { type: 'text/javascript' }));
+            await attempt(href);
+            this.dsp = 'ready'; this.loaded.add('#dsp');
+            if (!this.offline) this.sync();
+            return;
+          } catch (e) { last = e; }
+          finally { if (href && !useLocal) URL.revokeObjectURL(href); }
+        }
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      this.dsp = 'failed'; console.warn('Vocal DSP worklet unavailable, using the fallback', last);
       if (!this.offline) this.sync();
     })();
     return this.dspP;
@@ -7495,6 +7516,7 @@ function suiteLoadPreset(ins, p) {
     m.vsTarget = p.kind === 'user' ? (p.target || m.vsTarget || 'clean') : p.id; // who this preset sounds like
   });
   suiteApplyProfileTune(ins); // your remembered voice: Tune starts from your range and drift, before any match
+  if (engine && usesDsp(project)) engine.loadDsp(); // start the fast engine now, so it is ready before the mic opens
   suiteAutoMatch(ins);
 }
 /* With a take on the track, a new preset is fitted to your voice straight away (a moment after you stop flicking through). */

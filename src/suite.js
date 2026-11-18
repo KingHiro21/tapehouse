@@ -412,6 +412,7 @@ function suiteLoadPreset(ins, p) {
     m.vsTarget = p.kind === 'user' ? (p.target || m.vsTarget || 'clean') : p.id; // who this preset sounds like
   });
   suiteApplyProfileTune(ins); // your remembered voice: Tune starts from your range and drift, before any match
+  if (engine && usesDsp(project)) engine.loadDsp(); // start the fast engine now, so it is ready before the mic opens
   suiteAutoMatch(ins);
 }
 /* With a take on the track, a new preset is fitted to your voice straight away (a moment after you stop flicking through). */

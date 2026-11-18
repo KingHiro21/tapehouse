@@ -57,4 +57,10 @@ const page = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta n
 await mkdir(path.join(root, 'dist'), { recursive: true });
 await writeFile(path.join(root, 'dist', 'tapehouse-preview.html'), fragment);
 await writeFile(path.join(root, 'dist', 'Tapehouse.html'), page);
-console.log(`built dist/tapehouse-preview.html and dist/Tapehouse.html (${fontBytes.size} fonts inlined)`);
+/* The vocal DSP worklet as a real file next to the page: audioWorklet.addModule on a blob URL
+   hangs on some Windows machines, so the engine prefers this same-origin file (blob stays as fallback). */
+const voc = await read('vocal.js');
+const dspCode = voc.slice(voc.indexOf('class TuneCore'), voc.indexOf('const DSP_NODES'));
+const { dspModule } = new Function(dspCode + '\nreturn { dspModule };')();
+await writeFile(path.join(root, 'dist', 'Tapehouse-dsp.js'), dspModule());
+console.log(`built dist/tapehouse-preview.html and dist/Tapehouse.html (${fontBytes.size} fonts inlined) + DSP worklet file`);
