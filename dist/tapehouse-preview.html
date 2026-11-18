@@ -1140,7 +1140,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.4';
+const APP_VERSION = '2.4.5';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -2553,20 +2553,20 @@ class DeHarshCore {
    sides, like Tune). Must stay self-contained (no outside helpers): the same source runs on the main thread
    (fallback) and inside the AudioWorklet. */
 class SpecCore {
-  constructor(sr) {
-    this.sr = sr; this.N = 1024; this.hop = 256; this.L = this.N - this.hop; // 768 samples of look-ahead
-    this.win = new Float32Array(this.N);
-    for (let i = 0; i < this.N; i++) this.win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / this.N);
-    this.inr = new Float32Array(this.N * 2);      // input history
-    this.acc = new Float32Array(this.N * 2);      // overlap-add accumulator
-    this.re = new Float32Array(this.N); this.im = new Float32Array(this.N);
-    this.ore = new Float32Array(this.N); this.oim = new Float32Array(this.N);
-    this.nb = this.N / 2 + 1;
+  constructor(sr, N = 1024, hop = N / 4) {
+    this.sr = sr; this.N = N; this.hop = hop; this.L = N - hop; // 768 samples of look-ahead at the default size
+    this.win = new Float32Array(N);
+    for (let i = 0; i < N; i++) this.win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+    this.inr = new Float32Array(N * 2);      // input history
+    this.acc = new Float32Array(N * 2);      // overlap-add accumulator
+    this.re = new Float32Array(N); this.im = new Float32Array(N);
+    this.ore = new Float32Array(N); this.oim = new Float32Array(N);
+    this.nb = N / 2 + 1;
     this.mag2 = new Float32Array(this.nb);
     this.g = new Float32Array(this.nb).fill(1);   // smoothed per-bin gains
     this.gt = new Float32Array(this.nb).fill(1);  // this frame's raw gains
     this.n = 0; this.sDone = 0; this.eDone = -this.L;
-    this.att = Math.exp(-this.hop / (0.006 * sr)); this.rel = Math.exp(-this.hop / (0.08 * sr));
+    this.att = Math.exp(-hop / (0.006 * sr)); this.rel = Math.exp(-hop / (0.08 * sr));
     this.sm = 1; // how much the raw gains are smoothed across frequency (0 = per bin, 1 = fully smoothed)
   }
   fft(re, im) { // in-place radix-2
@@ -2628,7 +2628,9 @@ class SpecCore {
    A per-bin minimum tracker follows the noise floor down fast and up slowly, so the voice never becomes the "noise";
    loud, clearly voiced bins are left untouched, so sibilance and consonants keep their edge. */
 class DenoiseCore extends SpecCore {
-  constructor(sr, p) { super(sr); this.noise = new Float32Array(this.nb); this.p = { amount: 0.7, floor: -18 }; this.set(p || {}); }
+  /* live (Hear myself) runs a quarter-size transform: 4 ms of look-ahead instead of 16, so the
+     monitored voice feels real-time; the big transform stays for rendering takes. */
+  constructor(sr, p) { const live = !!(p && p.live); super(sr, live ? 256 : 1024, live ? 64 : 256); this.live = live; this.noise = new Float32Array(this.nb); this.p = { amount: 0.7, floor: -18 }; this.set(p || {}); }
   set(p) {
     for (const k in p) if (k in this.p) this.p[k] = +p[k];
     this.k = 2.4 * Math.max(0, Math.min(1, this.p.amount)); // over-subtraction: how much of the floor is removed (0 = transparent)
@@ -2662,7 +2664,8 @@ class DenoiseCore extends SpecCore {
    sustained notes pass through. Hits the boxy, echoey sound of singing in a hard-walled room; very heavy tails only
    get tighter, not gone. */
 class DeEchoCore extends SpecCore {
-  constructor(sr, p) { super(sr); this.env = new Float32Array(this.nb); this.p = { amount: 0.5, floor: -12 }; this.set(p || {}); }
+  /* live (Hear myself) runs a quarter-size transform: 4 ms of look-ahead instead of 16. */
+  constructor(sr, p) { const live = !!(p && p.live); super(sr, live ? 256 : 1024, live ? 64 : 256); this.live = live; this.env = new Float32Array(this.nb); this.p = { amount: 0.5, floor: -12 }; this.set(p || {}); }
   set(p) {
     for (const k in p) if (k in this.p) this.p[k] = +p[k];
     const a = Math.max(0, Math.min(1, this.p.amount));
@@ -2714,7 +2717,13 @@ class THTune extends AudioWorkletProcessor {
 registerProcessor('th-tune', THTune);
 const CORES = { deess: DeEssCore, comp: CompCore, limit: LimitCore, deharsh: DeHarshCore, denoise: DenoiseCore, deecho: DeEchoCore };
 class THFx extends AudioWorkletProcessor {
-  constructor(o) { super(); const p = (o && o.processorOptions) || {}; this.c = new CORES[p.kind](sampleRate, p); this.rep = !!p.report; this.k = 0; this.port.onmessage = e => this.c.set(e.data); }
+  constructor(o) { super(); const p = (o && o.processorOptions) || {}; this.kind = p.kind; this.live = !!p.live; this.c = new CORES[p.kind](sampleRate, p); this.rep = !!p.report; this.k = 0; this.port.onmessage = e => this.setP(e.data); }
+  setP(p) {
+    if (p && p.live !== undefined && !!p.live !== this.live) { // live size switch: rebuild the transform
+      this.live = !!p.live; this.c = new CORES[this.kind](sampleRate, p); return;
+    }
+    this.c.set(p);
+  }
   process(ins, outs) {
     const i = ins[0], o = outs[0], a = i && i[0], b = i && i[1];
     if (!a) { for (const ch of o) ch.fill(0); return true; }
@@ -2748,7 +2757,7 @@ function tuneMask(P, which, root, smode) {
    so the worklet gets its starting settings in processorOptions (offline renders need that). */
 function dspPrim(E, kind, makeCore, toParams) {
   const ac = E.ac, input = ac.createGain(), output = ac.createGain();
-  let node = null, core = null, rep = null, last = {};
+  let node = null, core = null, coreLive = false, rep = null, last = {};
   const B = 1024, sr = ac.sampleRate; // fallback buffer: the main thread must service this, so give it slack
   const build = p => {
     if (E.dsp === 'ready') {
@@ -2775,10 +2784,15 @@ function dspPrim(E, kind, makeCore, toParams) {
     get latency() { // what this effect delays the signal by, so audio clips can start early and stay on the beat
       if (!node) return 0;
       const own = kind === 'tune' ? (core ? core.L : TuneCore.latency(sr, last.live, last.voice)) : kind === 'limit' ? LimitCore.latency(sr)
-        : kind === 'denoise' || kind === 'deecho' ? (core ? core.L : 768) : 0;
+        : kind === 'denoise' || kind === 'deecho' ? (core ? core.L : last.live ? 192 : 768) : 0;
       return (own + (core ? B : 0)) / sr;
     },
-    apply(s) { const p = last = toParams(E, s); if (!node) build(p); else if (core) core.set(p); else node.port.postMessage(p); },
+    apply(s) { const p = last = toParams(E, s);
+      if (!node) { coreLive = !!p.live; build(p); }
+      else if (core) { if (!!p.live !== coreLive) { coreLive = !!p.live; core = makeCore(sr, p); } else core.set(p); } // live switches resize the transform: new core
+      else node.port.postMessage(p);
+    },
+    refresh() { apply(last); }, // e.g. the engine switching to low-latency monitoring must reach the cores
     dispose() { if (node) { if (core) node.onaudioprocess = null; else node.port.onmessage = null; } disc(input, output, node); },
   };
 }
@@ -2792,8 +2806,8 @@ PRIMS.comp = E => dspPrim(E, 'comp', (sr, p) => new CompCore(sr, p), (E2, s) => 
 PRIMS.limit = E => dspPrim(E, 'limit', (sr, p) => new LimitCore(sr, p), (E2, s) => ({ ceiling: clamp(+(s.ceiling ?? -1), -12, 0), release: clamp(+(s.release ?? 80), 5, 1000) }));
 PRIMS.deharsh = E => dspPrim(E, 'deharsh', (sr, p) => new DeHarshCore(sr, p), (E2, s) => ({ depth: clamp(+(s.depth ?? 5), 0, 18), sens: clamp(+(s.sens ?? 0.5), 0, 1) }));
 PRIMS.deess = E => dspPrim(E, 'deess', (sr, p) => new DeEssCore(sr, p), (E2, s) => ({ freq: clamp(+s.freq || 6500, 2000, 12000), thresh: clamp(+(s.thresh ?? -28), -60, 0), range: clamp(+(s.range ?? 8), 0, 24) }));
-PRIMS.denoise = E => dspPrim(E, 'denoise', (sr, p) => new DenoiseCore(sr, p), (E2, s) => ({ amount: clamp(+(s.amount ?? 0.7), 0, 1), floor: clamp(+(s.floor ?? -18), -40, -6) }));
-PRIMS.deecho = E => dspPrim(E, 'deecho', (sr, p) => new DeEchoCore(sr, p), (E2, s) => ({ amount: clamp(+(s.amount ?? 0.5), 0, 1), floor: clamp(+(s.floor ?? -12), -30, -6) }));
+PRIMS.denoise = E => dspPrim(E, 'denoise', (sr, p) => new DenoiseCore(sr, p), (E2, s) => ({ amount: clamp(+(s.amount ?? 0.7), 0, 1), floor: clamp(+(s.floor ?? -18), -40, -6), live: !!E2.lowLat && !E2.offline }));
+PRIMS.deecho = E => dspPrim(E, 'deecho', (sr, p) => new DeEchoCore(sr, p), (E2, s) => ({ amount: clamp(+(s.amount ?? 0.5), 0, 1), floor: clamp(+(s.floor ?? -12), -30, -6), live: !!E2.lowLat && !E2.offline }));
 /* Slowly drifting short delays panned left and right (two or four voices): a wide double that keeps the lead in the middle,
    in the spirit of Waves Doubler, MicroShift and Dimension D. */
 PRIMS.doubler = E => {
