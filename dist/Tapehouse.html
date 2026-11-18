@@ -1135,7 +1135,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.2';
+const APP_VERSION = '2.3';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -2207,7 +2207,9 @@ function parseMidi(ab) {
 class TuneCore {
   /* Look-ahead in samples. Grains reach half a window back and forth (plus formant stretch);
      live mode uses shorter grains so monitoring feels immediate, renders use the full-quality size. */
-  static grainHalf(sr, live, voice) { return Math.round(sr / (!live || voice === 'low' ? 110 : voice === 'soprano' ? 200 : 170)); }
+  /* Live grains are longer than they used to be (132 vs 170): a window shorter than the sung period locks phases badly and
+     reads as metallic. The extra ~4 ms of monitoring latency buys a much more natural sound. */
+  static grainHalf(sr, live, voice) { return Math.round(sr / (!live || voice === 'low' ? 110 : voice === 'soprano' ? 155 : 132)); }
   static latency(sr, live, voice) { return Math.ceil(TuneCore.grainHalf(sr, live, voice) * (1 + Math.pow(2, 3 / 12))) + 2; }
   constructor(sr, p) {
     this.sr = sr;
@@ -2519,6 +2521,144 @@ class DeHarshCore {
     }
   }
 }
+/* Streaming STFT scaffolding under the spectral clean-up modules (Noise removal, De-echo): Hann window, 75% overlap,
+   per-bin gains smoothed across frequency and time, and a phase-coherent mono path (stereo stays identical on both
+   sides, like Tune). Must stay self-contained (no outside helpers): the same source runs on the main thread
+   (fallback) and inside the AudioWorklet. */
+class SpecCore {
+  constructor(sr) {
+    this.sr = sr; this.N = 1024; this.hop = 256; this.L = this.N - this.hop; // 768 samples of look-ahead
+    this.win = new Float32Array(this.N);
+    for (let i = 0; i < this.N; i++) this.win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / this.N);
+    this.inr = new Float32Array(this.N * 2);      // input history
+    this.acc = new Float32Array(this.N * 2);      // overlap-add accumulator
+    this.re = new Float32Array(this.N); this.im = new Float32Array(this.N);
+    this.ore = new Float32Array(this.N); this.oim = new Float32Array(this.N);
+    this.nb = this.N / 2 + 1;
+    this.mag2 = new Float32Array(this.nb);
+    this.g = new Float32Array(this.nb).fill(1);   // smoothed per-bin gains
+    this.gt = new Float32Array(this.nb).fill(1);  // this frame's raw gains
+    this.n = 0; this.sDone = 0; this.eDone = -this.L;
+    this.att = Math.exp(-this.hop / (0.006 * sr)); this.rel = Math.exp(-this.hop / (0.08 * sr));
+    this.sm = 1; // how much the raw gains are smoothed across frequency (0 = per bin, 1 = fully smoothed)
+  }
+  fft(re, im) { // in-place radix-2
+    const N = this.N;
+    for (let i = 1, j = 0; i < N; i++) { let b = N >> 1; for (; j & b; b >>= 1) j ^= b; j ^= b; if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let len = 2; len <= N; len <<= 1) {
+      const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang), h = len >> 1;
+      for (let i = 0; i < N; i += len) {
+        let cr = 1, ci = 0;
+        for (let k = 0; k < h; k++) {
+          const a = i + k, b = a + h, vr = re[b] * cr - im[b] * ci, vi = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - vr; im[b] = im[a] - vi; re[a] += vr; im[a] += vi;
+          const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+        }
+      }
+    }
+  }
+  /* One frame: window, FFT, the subclass's per-bin gains, resynthesis, overlap-add. */
+  frame() {
+    const N = this.N, re = this.re, im = this.im, s = this.sDone, inr = this.inr, win = this.win, mask = N * 2 - 1;
+    for (let i = 0; i < N; i++) { re[i] = inr[(s + i) & mask] * win[i]; im[i] = 0; }
+    this.fft(re, im);
+    const nb = this.nb, mag = this.mag2;
+    for (let k = 0; k < nb; k++) mag[k] = re[k] * re[k] + im[k] * im[k];
+    this.gainsFor(mag);
+    // soften the raw gains a third of an octave either side, so isolated bins don't chatter (musical noise)
+    const gt = this.gt, sm = this.sm;
+    for (let k = 1; k < nb - 1; k++) gt[k] = gt[k] * (1 - sm) + (gt[k - 1] + 2 * gt[k] + gt[k + 1]) * 0.25 * sm;
+    gt[0] = (gt[0] + gt[1]) * 0.5 * sm + gt[0] * (1 - sm); gt[nb - 1] = (gt[nb - 1] + gt[nb - 2]) * 0.5 * sm + gt[nb - 1] * (1 - sm);
+    const g = this.g, att = this.att, rel = this.rel;
+    for (let k = 0; k < nb; k++) g[k] += (gt[k] - g[k]) * (gt[k] < g[k] ? att : rel);
+    // resynthesis: multiply the spectrum, invert (real/imag swap trick), window, overlap-add
+    const ore = this.ore, oim = this.oim;
+    for (let k = 0; k < nb; k++) { ore[k] = re[k] * g[k]; oim[k] = im[k] * g[k]; }
+    for (let k = 1; k < N / 2; k++) { ore[N - k] = ore[k]; oim[N - k] = -oim[k]; }
+    for (let k = 0; k < N; k++) { const v = ore[k]; ore[k] = oim[k]; oim[k] = v; } // swap, forward FFT, swap back = inverse (÷N below)
+    this.fft(ore, oim);
+    for (let k = 0; k < N; k++) { const v = ore[k]; ore[k] = oim[k]; oim[k] = v; }
+    const acc = this.acc, wn = win, norm = 2 / (3 * N); // swap-trick inverse includes ÷N; Hann² sums to 1.5 at 75% overlap
+    for (let i = 0; i < N; i++) acc[(s + i) & mask] += ore[i] * wn[i] * norm;
+  }
+  process(l, r, ol, or, len) {
+    const inr = this.inr, acc = this.acc, mask = this.N * 2 - 1, n0 = this.n;
+    for (let i = 0; i < len; i++) inr[(n0 + i) & mask] = r ? (l[i] + r[i]) * 0.5 : l[i];
+    this.n = n0 + len;
+    while (this.n - this.sDone >= this.N) { this.frame(); this.sDone += this.hop; }
+    let p = this.eDone;
+    for (let i = 0; i < len; i++, p++) {
+      if (p < 0) { ol[i] = 0; if (or) or[i] = 0; continue; } // the look-ahead primes as silence
+      const v = acc[p & mask]; acc[p & mask] = 0; ol[i] = v; if (or) or[i] = v;
+    }
+    this.eDone = p;
+  }
+}
+/* Noise removal: learns the static hiss and hum behind the voice and turns it down, while you sing or between phrases.
+   A per-bin minimum tracker follows the noise floor down fast and up slowly, so the voice never becomes the "noise";
+   loud, clearly voiced bins are left untouched, so sibilance and consonants keep their edge. */
+class DenoiseCore extends SpecCore {
+  constructor(sr, p) { super(sr); this.noise = new Float32Array(this.nb); this.p = { amount: 0.7, floor: -18 }; this.set(p || {}); }
+  set(p) {
+    for (const k in p) if (k in this.p) this.p[k] = +p[k];
+    this.k = 2.4 * Math.max(0, Math.min(1, this.p.amount)); // over-subtraction: how much of the floor is removed (0 = transparent)
+    this.floor = Math.pow(10, Math.max(-40, Math.min(-6, this.p.floor || -18)) / 20);
+    this.up = 1 - Math.exp(-this.hop / (0.4 * this.sr));  // the floor estimate rises quickly while the room is alone
+    this.dn = 1 - Math.exp(-this.hop / (0.03 * this.sr)); // and falls fast (30 ms)
+  }
+  gainsFor(mag) {
+    const nb = this.nb, noise = this.noise, gt = this.gt, k = this.k, up = this.up, dn = this.dn, floor = this.floor;
+    let loTot = 0; for (let i = 0; i < nb; i++) loTot += noise[i];
+    let tot = 0; for (let i = 0; i < nb; i++) tot += mag[i];
+    const live = tot > 1e-9, vad = live && tot > 8 * loTot; // the voice is in: freeze the floor so it never learns the notes
+    for (let i = 0; i < nb; i++) {
+      const m = mag[i]; let lo = noise[i];
+      if (lo === 0) lo = m;                    // first hearing of this bin: take the level as the floor
+      else if (lo > m * 1.4) lo += (m * 1.4 - lo) * dn; // the floor follows the level down fast
+      else if (!vad) lo += (m - lo) * up;      // and rises while the room is alone, never under a held note
+      noise[i] = lo;
+      let gr = 1;
+      if (live && lo > 1e-12) {
+        const a = k * lo;
+        gr = m > a ? 1 - a / m : floor;   // Wiener-style: take out what the floor explains, keep the rest
+        if (m > 60 * lo) gr = 1;          // clearly voiced bins stay untouched
+      }
+      gt[i] = gr;
+    }
+  }
+}
+/* De-echo: tightens room echo and reverb tails around the voice. Per bin, an envelope that rises with onsets but
+   decays faster than a room does: while the level keeps falling (the tail) the bin is turned down, while onsets and
+   sustained notes pass through. Hits the boxy, echoey sound of singing in a hard-walled room; very heavy tails only
+   get tighter, not gone. */
+class DeEchoCore extends SpecCore {
+  constructor(sr, p) { super(sr); this.env = new Float32Array(this.nb); this.p = { amount: 0.5, floor: -12 }; this.set(p || {}); }
+  set(p) {
+    for (const k in p) if (k in this.p) this.p[k] = +p[k];
+    const a = Math.max(0, Math.min(1, this.p.amount));
+    this.a = a; this.floor = Math.pow(10, Math.max(-30, Math.min(-6, this.p.floor || -12)) / 20);
+    this.atk = 1 - Math.exp(-this.hop / (0.002 * this.sr));               // an onset is an onset: 2 ms
+    this.dec = Math.exp(-this.hop / ((0.05 + 0.35 * a) * this.sr));       // the envelope decays faster than the room, so tails show up as level still hanging
+    this.rel = Math.exp(-this.hop / (0.04 * this.sr));                    // gains follow the tail quickly
+    this.sm = 0.35;                                                       // tails sit in broad bands, not single bins
+  }
+  gainsFor(mag) {
+    const nb = this.nb, env = this.env, gt = this.gt, floor = this.floor, atk = this.atk, dec = this.dec, amt = this.a;
+    const strength = 0.35 + 0.65 * amt;
+    for (let i = 0; i < nb; i++) {
+      const m = mag[i]; let e = env[i];
+      e = m > e ? e + (m - e) * atk : e * dec + m * (1 - dec);
+      env[i] = e;
+      let gr = 1;
+      if (e > 1e-12) {
+        const tail = 1 - (m / e) * 1.25; // how much of this bin is tail: onsets read 0, decayed tails read up to 1
+        if (tail > 0) { gr = 1 - strength * tail * (1 - floor); if (gr < floor) gr = floor; }
+      }
+      gt[i] = gr;
+    }
+  }
+}
+
 /* DSP-END */
 
 function dspModule() {
@@ -2527,6 +2667,9 @@ ${DeEssCore.toString()}
 ${CompCore.toString()}
 ${LimitCore.toString()}
 ${DeHarshCore.toString()}
+${SpecCore.toString()}
+${DenoiseCore.toString()}
+${DeEchoCore.toString()}
 class THTune extends AudioWorkletProcessor {
   constructor(o) { super(); const p = (o && o.processorOptions) || {}; this.c = new TuneCore(sampleRate, p); this.rep = !!p.report; this.m = new Float32Array(128); this.k = 0;
     this.port.onmessage = e => this.c.set(e.data); }
@@ -2539,7 +2682,7 @@ class THTune extends AudioWorkletProcessor {
   }
 }
 registerProcessor('th-tune', THTune);
-const CORES = { deess: DeEssCore, comp: CompCore, limit: LimitCore, deharsh: DeHarshCore };
+const CORES = { deess: DeEssCore, comp: CompCore, limit: LimitCore, deharsh: DeHarshCore, denoise: DenoiseCore, deecho: DeEchoCore };
 class THFx extends AudioWorkletProcessor {
   constructor(o) { super(); const p = (o && o.processorOptions) || {}; this.c = new CORES[p.kind](sampleRate, p); this.rep = !!p.report; this.k = 0; this.port.onmessage = e => this.c.set(e.data); }
   process(ins, outs) {
@@ -2554,7 +2697,7 @@ class THFx extends AudioWorkletProcessor {
 registerProcessor('th-fx', THFx);`;
 }
 
-const DSP_NODES = new Set(['tune', 'deess', 'comp', 'limit', 'deharsh']);
+const DSP_NODES = new Set(['tune', 'deess', 'comp', 'limit', 'deharsh', 'denoise', 'deecho']);
 function pluginUsesDsp(id) { const pl = plugins.get(id); return !!(pl && pl.manifest.graph && pl.manifest.graph.some(n => DSP_NODES.has(n.node))); }
 function usesDsp(P) { return P.mixer.some(m => m.fx.some(f => !f.bypass && pluginUsesDsp(f.plugin))); }
 /* 12-bit mask of the pitch classes Tune may snap to. root: below 0 follows the song key (the key at the top, which Smart key
@@ -2600,7 +2743,8 @@ function dspPrim(E, kind, makeCore, toParams) {
     input, output, probe() { return core ? (core.report ? core.report() : core.grDb !== undefined ? { gr: core.grDb } : null) : rep; },
     get latency() { // what this effect delays the signal by, so audio clips can start early and stay on the beat
       if (!node) return 0;
-      const own = kind === 'tune' ? (core ? core.L : TuneCore.latency(sr, last.live, last.voice)) : kind === 'limit' ? LimitCore.latency(sr) : 0;
+      const own = kind === 'tune' ? (core ? core.L : TuneCore.latency(sr, last.live, last.voice)) : kind === 'limit' ? LimitCore.latency(sr)
+        : kind === 'denoise' || kind === 'deecho' ? (core ? core.L : 768) : 0;
       return (own + (core ? B : 0)) / sr;
     },
     apply(s) { const p = last = toParams(E, s); if (!node) build(p); else if (core) core.set(p); else node.port.postMessage(p); },
@@ -2617,6 +2761,8 @@ PRIMS.comp = E => dspPrim(E, 'comp', (sr, p) => new CompCore(sr, p), (E2, s) => 
 PRIMS.limit = E => dspPrim(E, 'limit', (sr, p) => new LimitCore(sr, p), (E2, s) => ({ ceiling: clamp(+(s.ceiling ?? -1), -12, 0), release: clamp(+(s.release ?? 80), 5, 1000) }));
 PRIMS.deharsh = E => dspPrim(E, 'deharsh', (sr, p) => new DeHarshCore(sr, p), (E2, s) => ({ depth: clamp(+(s.depth ?? 5), 0, 18), sens: clamp(+(s.sens ?? 0.5), 0, 1) }));
 PRIMS.deess = E => dspPrim(E, 'deess', (sr, p) => new DeEssCore(sr, p), (E2, s) => ({ freq: clamp(+s.freq || 6500, 2000, 12000), thresh: clamp(+(s.thresh ?? -28), -60, 0), range: clamp(+(s.range ?? 8), 0, 24) }));
+PRIMS.denoise = E => dspPrim(E, 'denoise', (sr, p) => new DenoiseCore(sr, p), (E2, s) => ({ amount: clamp(+(s.amount ?? 0.7), 0, 1), floor: clamp(+(s.floor ?? -18), -40, -6) }));
+PRIMS.deecho = E => dspPrim(E, 'deecho', (sr, p) => new DeEchoCore(sr, p), (E2, s) => ({ amount: clamp(+(s.amount ?? 0.5), 0, 1), floor: clamp(+(s.floor ?? -12), -30, -6) }));
 /* Slowly drifting short delays panned left and right (two or four voices): a wide double that keeps the lead in the middle,
    in the spirit of Waves Doubler, MicroShift and Dimension D. */
 PRIMS.doubler = E => {
@@ -2699,6 +2845,16 @@ BUILTIN_PLUGINS.push(
       { id: 'depth', label: 'Depth', min: 0, max: 12, default: 5, unit: 'dB' },
       { id: 'sens', label: 'Sensitivity', min: 0, max: 1, default: 0.5, unit: '%' }],
     graph: [{ node: 'deharsh', depth: '$depth', sens: '$sens' }] },
+  { id: 'th.denoise', type: 'effect', name: 'Noise Removal', author: 'Tapehouse', description: 'Learns the static hiss, hum and fan noise behind your voice and turns it down while you sing and between phrases. Leave a second of silence before the first take so it hears the room.',
+    params: [
+      { id: 'amount', label: 'Amount', min: 0, max: 1, default: 0.7, unit: '%' },
+      { id: 'floor', label: 'Floor', min: -30, max: -6, default: -18, unit: 'dB' }],
+    graph: [{ node: 'denoise', amount: '$amount', floor: '$floor' }] },
+  { id: 'th.dereverb', type: 'effect', name: 'De-echo', author: 'Tapehouse', description: 'Tightens room echo and reverb tails around your voice: onsets and sustained notes pass through, the tail that rings on after them is turned down. Singing in a hard-walled room sounds closer.',
+    params: [
+      { id: 'amount', label: 'Amount', min: 0, max: 1, default: 0.5, unit: '%' },
+      { id: 'floor', label: 'Floor', min: -24, max: -6, default: -12, unit: 'dB' }],
+    graph: [{ node: 'deecho', amount: '$amount', floor: '$floor' }] },
   { id: 'th.limiter', type: 'effect', name: 'Limiter', author: 'Tapehouse', description: 'Safety limiter: nothing passes above the ceiling, so the chain can never clip.',
     params: [
       { id: 'ceiling', label: 'Ceiling', min: -6, max: 0, default: -1, unit: 'dB' },
@@ -6522,7 +6678,7 @@ function lmStyleParts(style) {
   const space = ch.fx.filter(([pl]) => ['th.doubler', 'th.chorus', 'th.tape-delay', 'th.pingpong', 'th.room-reverb'].includes(pl));
   return { tune: tune && tune[1], sat: sat && sat[1], space };
 }
-const LM_ROLES = { gate: 'Noise gate', level: 'Input level', tune: 'Tune', eq: 'EQ match', comp: 'Compress', comp2: 'Glue', sat: 'Saturate', tamer: 'Tamer', deess: 'De-ess', width: 'Width', delay: 'Delay', reverb: 'Reverb', safe: 'Limiter' };
+const LM_ROLES = { gate: 'Noise gate', nc: 'Noise removal', deecho: 'De-echo', level: 'Input level', tune: 'Tune', eq: 'EQ match', comp: 'Compress', comp2: 'Glue', sat: 'Saturate', tamer: 'Tamer', deess: 'De-ess', width: 'Width', delay: 'Delay', reverb: 'Reverb', safe: 'Limiter' };
 /* Target numbers for this match: from a style, or measured from an a cappella. */
 function lmTarget(M) {
   const st = LM_STYLES[M.style] || LM_STYLES.clean;
@@ -6542,7 +6698,11 @@ function lmBuildChain(M) {
   const proc = 0.4 + 0.75 * i, wet = 0.5 + 0.625 * i, off = new Set(M.off || []), fx = [];
   const add = (role, pl, params) => { const f = fxSlot(pl, { ...params, _role: role }); f.bypass = off.has(role); fx.push(f); };
   const R = Math.max(0, a.lra * 0.8 - t.lra);
-  if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) add('gate', 'th.vocal-comp', { mode: 'gate', target: clamp(a.noiseDb + 6, -80, -20) });
+  if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
+    add('nc', 'th.denoise', { amount: +clamp(0.45 + (30 - (a.activeDb - a.noiseDb)) * 0.025, 0.45, 0.85).toFixed(2) });
+    add('gate', 'th.vocal-comp', { mode: 'gate', target: clamp(a.noiseDb + 6, -80, -20) });
+  }
+  if (a.wetDb != null && a.wetDb > -30) add('deecho', 'th.dereverb', { amount: +clamp(0.3 + (-a.wetDb - 20) * 0.022, 0.3, 0.8).toFixed(2) });
   add('level', 'th.vocal-comp', { mode: 'auto', target: -20 });
   if (parts.tune) add('tune', 'th.autotune', { ...parts.tune, voice: lmVoiceType(a) });
   const gains = lmFitEq(lmDesired(M)), eq = { lowcut: lmLowCut(a) }; gains.forEach((g, k) => { eq['g' + k] = g; });
@@ -6770,9 +6930,11 @@ async function runListen() {
    ===================================================================== */
 
 /* ---------- the chain behind the suite ---------- */
-const SUITE_ORDER = ['gate', 'level', 'tune', 'eqm', 'eq', 'comp', 'comp2', 'sat', 'tamer', 'deess', 'width', 'delay', 'reverb', 'safe'];
+const SUITE_ORDER = ['gate', 'nc', 'deecho', 'level', 'tune', 'eqm', 'eq', 'comp', 'comp2', 'sat', 'tamer', 'deess', 'width', 'delay', 'reverb', 'safe'];
 const SUITE_DEF = { // added only when a control needs them, set so they change nothing until you turn them
   gate: ['th.vocal-comp', { mode: 'gate', target: -80 }],
+  nc: ['th.denoise', { amount: 0, floor: -18 }],
+  deecho: ['th.dereverb', { amount: 0, floor: -12 }],
   level: ['th.vocal-comp', { mode: 'auto', target: -20 }],
   tune: ['th.autotune', { retune: 20, humanize: 0.15, flex: 0.1, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'off', root: -1, smode: 'minor' }],
   eqm: ['th.match-eq', { lowcut: 30, g0: 0, g1: 0, g2: 0, g3: 0, g4: 0, g5: 0, g6: 0, g7: 0, g8: 0, g9: 0, g10: 0 }],
@@ -6787,7 +6949,7 @@ const SUITE_DEF = { // added only when a control needs them, set so they change 
   reverb: ['th.room-reverb', { size: 1.8, damp: 8500, predelay: 0.02, mix: 0 }],
   safe: ['th.limiter', { ceiling: -1, release: 80 }],
 };
-const SUITE_MODS = [['tune', 'Tune', ['tune']], ['cleanup', 'Cleanup', ['gate', 'tamer', 'deess']], ['tone', 'Tone', ['eqm', 'eq', 'sat']], ['dynamics', 'Dynamics', ['level', 'comp', 'comp2']], ['space', 'Space', ['width', 'delay', 'reverb']]];
+const SUITE_MODS = [['tune', 'Tune', ['tune']], ['cleanup', 'Cleanup', ['gate', 'nc', 'deecho', 'tamer', 'deess']], ['tone', 'Tone', ['eqm', 'eq', 'sat']], ['dynamics', 'Dynamics', ['level', 'comp', 'comp2']], ['space', 'Space', ['width', 'delay', 'reverb']]];
 /* Which effect on the insert plays which part, whether it came from a preset, Listen & Match or the suite itself. */
 function suiteClassify(fx) {
   const map = {}; let comps = 0;
@@ -7042,6 +7204,8 @@ const SUITE_MACROS = {
   humanize: { mod: 'tune', label: 'Humanize', min: 0, max: 100, step: 1, def: 15, fmt: pct, roles: ['tune'], get: M => Math.round(+(M.tune.params.humanize ?? 0.2) * 100), set: v => ({ tune: { humanize: v / 100 } }) },
   flex: { mod: 'tune', label: 'Flex', min: 0, max: 100, step: 1, def: 10, fmt: pct, roles: ['tune'], get: M => Math.round(+(M.tune.params.flex ?? 0) * 100), set: v => ({ tune: { flex: v / 100 } }) },
   gate: { off: 0, mod: 'cleanup', label: 'Noise gate', min: 0, max: 100, def: 0, fmt: pct, roles: ['gate'], get: M => clamp((+M.gate.params.target + 80) / 0.5, 0, 100), set: v => ({ gate: { target: -80 + v * 0.5 } }) },
+  nc: { off: 0, mod: 'cleanup', label: 'Noise removal', min: 0, max: 100, def: 70, fmt: pct, roles: ['nc'], get: M => clamp(+M.nc.params.amount * 100, 0, 100), set: v => ({ nc: { amount: +(v / 100).toFixed(2) } }) },
+  deecho: { off: 0, mod: 'cleanup', label: 'De-echo', min: 0, max: 100, def: 50, fmt: pct, roles: ['deecho'], get: M => clamp(+M.deecho.params.amount * 100, 0, 100), set: v => ({ deecho: { amount: +(v / 100).toFixed(2) } }) },
   deess: { off: 0, mod: 'cleanup', label: 'De-ess', min: 0, max: 100, def: 40, fmt: pct, roles: ['deess'], get: M => clamp(+M.deess.params.range / 0.12, 0, 100), set: v => ({ deess: { range: v * 0.12, thresh: -24 - v * 0.14 } }) },
   tamer: { off: 0, mod: 'cleanup', label: 'Tamer', min: 0, max: 100, def: 30, fmt: pct, roles: ['tamer'], get: M => clamp(+M.tamer.params.depth / 0.1, 0, 100), set: v => ({ tamer: { depth: v * 0.1 } }) },
   lowcut: { off: 30, mod: 'cleanup', label: 'Low cut', min: 30, max: 300, curve: 'log', def: 90, fmt: v => Math.round(v) + ' Hz', roles: M => [M.eqm ? 'eqm' : 'eq'], get: M => +((M.eqm || M.eq).params.lowcut ?? 90), set: (v, M) => ({ [M.eqm ? 'eqm' : 'eq']: { lowcut: Math.round(v) } }) },
@@ -7100,9 +7264,15 @@ const SUITE_ARTISTS = [
   { id: 'bieber', name: 'Justin Bieber', al: ['justin bieber', 'bieber'], chain: 'bieber' },
   { id: 'laroi', name: 'Kid LAROI', al: ['the kid laroi', 'kid laroi', 'laroi'], chain: 'laroi' },
   { id: 'mgk', name: 'MGK', al: ['machine gun kelly', 'mgk'], chain: 'mgk' },
-  { id: 'weeknd', name: 'The Weeknd', al: ['the weeknd', 'weeknd', 'weekend', 'abel'], s: { retune: 22, humanize: 20, warmth: -1, presence: 1, air: 4, compress: 55, deess: 50, tamer: 35, width: 35, delay: 25, reverb: 40, size: 3.2 }, ch: 'opto', time: 1 },
-  { id: 'drake', name: 'Drake', al: ['drake', 'drizzy'], s: { retune: 28, humanize: 25, warmth: 1, presence: 1, air: 1.5, compress: 55, deess: 45, tamer: 30, width: 8, delay: 8, reverb: 12, size: 1.4 }, ch: 'fet', time: 0.5 },
-  { id: 'travis', name: 'Travis Scott', al: ['travis scott', 'travis', 'la flame'], s: { retune: 1, humanize: 0, presence: 1.5, air: 2.5, grit: 25, compress: 60, deess: 50, tamer: 40, width: 35, delay: 35, reverb: 40, size: 3.5 }, ch: 'fet', time: 0.75, hard: true },
+  { id: 'weeknd', name: 'The Weeknd', al: ['the weeknd', 'weeknd', 'weekend', 'abel'], s: { retune: 22, humanize: 20, warmth: -1, presence: 1, air: 4, compress: 55, deess: 50, tamer: 35, width: 35, delay: 25, reverb: 40, size: 3.2, predelay: 30 }, ch: 'opto', time: 1 },
+  { id: 'drake', name: 'Drake', al: ['drake', 'drizzy'], s: { retune: 22, humanize: 20, warmth: 0.5, presence: 1.5, air: 3, compress: 55, deess: 45, tamer: 30, width: 8, delay: 6, reverb: 10, size: 1 }, ch: 'fet', time: 0.5 },
+  // 40’s chain (Sound On Sound, on “Headlines”): Auto-Tune just to centre the pitch, RVox, de-esser, Pultec air, and a
+  // punchy compressor last. The beat is degraded instead of the vocal, so the top end belongs to the voice (air 3) and
+  // the space is a short plate, not a hall.
+  { id: 'travis', name: 'Travis Scott', al: ['travis scott', 'travis', 'la flame'], s: { retune: 1, humanize: 0, presence: 1.5, air: 2.5, grit: 25, compress: 60, deess: 50, tamer: 40, width: 35, delay: 35, reverb: 40, size: 3.5, predelay: 35 }, ch: 'fet', time: 0.75, hard: true },
+  { id: 'posty', name: 'Post Malone', al: ['post malone', 'posty'], s: { retune: 12, humanize: 10, warmth: 1, presence: 0.5, air: 2, grit: 8, compress: 55, deess: 45, tamer: 35, width: 25, delay: 22, reverb: 30, size: 2.4 }, ch: 'vox', time: 0.5 },
+  { id: 'pop', name: 'Pop Smoke', al: ['pop smoke', 'popsmoke', 'woo'], s: { retune: 0, humanize: 0, warmth: 1.5, presence: 1, air: 0.5, grit: 15, compress: 65, deess: 40, tamer: 30, width: 10, delay: 10, reverb: 22, size: 1.6 }, ch: 'fet', time: 0.5, hard: true },
+  { id: 'kanye', name: 'Kanye West', al: ['kanye west', 'kanye', 'ye '], s: { retune: 0, humanize: 5, warmth: 0.5, presence: 1.5, air: 2, grit: 10, compress: 60, deess: 45, tamer: 35, width: 20, delay: 12, reverb: 18, size: 1.8 }, ch: 'fet', time: 0.5, hard: true },
   { id: 'posty', name: 'Post Malone', al: ['post malone', 'posty'], s: { retune: 12, humanize: 10, warmth: 1, presence: 0.5, air: 2, grit: 8, compress: 55, deess: 45, tamer: 35, width: 25, delay: 22, reverb: 30, size: 2.4 }, ch: 'vox', time: 0.5 },
   { id: 'juice', name: 'Juice WRLD', al: ['juice wrld', 'juice world', 'juicewrld'], s: { retune: 6, humanize: 10, warmth: 0.5, presence: 1.5, air: 2, grit: 12, compress: 55, deess: 45, tamer: 40, width: 28, delay: 22, reverb: 30, size: 2.6 }, ch: 'vox', time: 0.5, hard: true },
   { id: 'billie', name: 'Billie Eilish', al: ['billie eilish', 'billie'], s: { retune: 35, humanize: 35, flex: 30, warmth: 1.5, air: 3, compress: 60, deess: 60, tamer: 40, width: 10, delay: 10, reverb: 18, size: 1.6 }, ch: 'opto', time: 0.5, natural: true },
@@ -7114,7 +7284,7 @@ const SUITE_ARTISTS = [
   { id: 'bruno', name: 'Bruno Mars', al: ['bruno mars', 'bruno'], s: { retune: 30, humanize: 25, warmth: 0.5, presence: 2, air: 2, compress: 60, deess: 50, tamer: 35, width: 15, delay: 12, reverb: 20, size: 1.8 }, ch: 'fet', time: 0.5, natural: true },
 ];
 function suiteFresh(P, ins) {
-  P.mixer[ins].fx = SUITE_ORDER.filter(r => r !== 'eqm' && r !== 'gate').map(r => fxSlot(SUITE_DEF[r][0], { ...SUITE_DEF[r][1] }));
+  P.mixer[ins].fx = SUITE_ORDER.filter(r => !['eqm', 'gate', 'nc', 'deecho'].includes(r)).map(r => fxSlot(SUITE_DEF[r][0], { ...SUITE_DEF[r][1] }));
 }
 function suiteApplyArtist(P, ins, a) {
   if (a.chain) { P.mixer[ins].fx = CHAINS[a.chain].fx.map(([pl, params]) => fxSlot(pl, { ...params })); return; }
@@ -7122,9 +7292,11 @@ function suiteApplyArtist(P, ins, a) {
   const map = suiteClassify(P.mixer[ins].fx);
   for (const [id, v] of Object.entries(a.s)) { const ch = SUITE_MACROS[id].set(v, map); for (const r in ch) if (map[r]) Object.assign(map[r].params, ch[r]); }
   if (a.ch) map.comp.params.mode = a.ch;
+  // formant fix stays on unless the artist is explicitly the hard-tuned sound: formants that follow the pitch shift are
+  // what makes a corrected voice read as robotic, and “automatically sound good” means natural first
+  map.tune.params.fcorr = a.hard ? 'off' : 'on';
   map.comp.params.output = +suiteMakeup(map.comp.params.mode, a.s.compress || 0).toFixed(2);
   if (a.time) map.delay.params.time = a.time;
-  map.tune.params.fcorr = a.natural ? 'on' : 'off';
 }
 
 /* ---------- presets ---------- */
@@ -7193,7 +7365,11 @@ function suiteParse(text) {
   else if (/\b(bypass|turn (it|everything|the effects?) off|raw (vocal|voice|sound))\b/.test(t)) ops.push({ bypass: true });
   // tuning
   let h;
-  if (/\b(robot|robotic|hard[- ]?tune|hard tuned|super tuned|t-?pain effect)\b/.test(t) && !art) ops.push({ set: 'retune', v: 0 }, { set: 'humanize', v: 0 }, { fcorr: 'off' }, { tuneOn: true });
+  // “sounds like a robot” / “too robotic” wants LESS of the hard tune; only an explicit robot/hard-tune request sets it
+  const robotFix = /\b(too robot\w*|less robot\w*|sounds? like a robot|sound like a robot|like a robot\b|not robot\w*|no robot\w*|don'?t want (it |to sound )?robot\w*)\b/.test(t);
+  const robotMake = !robotFix && (/\b(hard[- ]?tune|hard tuned|super tuned|t-?pain effect)\b/.test(t) || /\brobot\w*\b/.test(t)) && !art;
+  if (robotMake) ops.push({ set: 'retune', v: 0 }, { set: 'humanize', v: 0 }, { fcorr: 'off' }, { tuneOn: true });
+  else if (robotFix) ops.push({ set: 'retune', v: 35 }, { set: 'humanize', v: 35 }, { fcorr: 'on' }, { tuneOn: true });
   else if (/\b(no autotune|without autotune|autotune off|turn off (the )?autotune|no tun|untuned|raw pitch)\w*/.test(t)) ops.push({ tuneOff: true });
   else if (/\b(natural|transparent|subtle tun\w*|less obvious|not obvious|invisible)\b/.test(t) && !art) ops.push({ set: 'retune', v: 40 }, { set: 'humanize', v: 35 }, { fcorr: 'on' }, { tuneOn: true });
   else if ((h = has(/\b(autotune|tune|tuning|pitch correction|tuned|pitchy|off[- ]key)\b/))) {
@@ -7206,7 +7382,7 @@ function suiteParse(text) {
   if ((h = has(/\b(reverb|verb|hall|room)\b/))) ops.push(/\bno (reverb|verb)\b/.test(t) ? { set: 'reverb', v: 0 } : { add: 'reverb', v: (h.neg ? -15 : 15) * k });
   if (/\b(bigger|huge|massive|larger|longer) (room|space|reverb|hall|tail)\b/.test(t)) ops.push({ add: 'size', v: 0.8 * k });
   else if (/\b(smaller|shorter|tighter) (room|space|reverb|tail)\b/.test(t)) ops.push({ add: 'size', v: -0.6 * k });
-  if ((h = has(/\b(delay|echo|echoes|slapback|slap)\b/))) ops.push(/\bno (delay|echo)/.test(t) ? { set: 'delay', v: 0 } : { add: 'delay', v: (h.neg ? -15 : 15) * k });
+  if ((h = has(/\b(delay|echo|echoes|slapback|slap)\b/)) && !/\b(de-?echo\w*|de-?reverb\w*|remove (the |room )?(echo|echoes|reverb)|take (out|off) the (echo|reverb|room)|boxy|echoey|echo in the (room|recording)|roomy|too much room)\b/.test(t)) ops.push(/\bno (delay|echo)/.test(t) ? { set: 'delay', v: 0 } : { add: 'delay', v: (h.neg ? -15 : 15) * k });
   if ((h = has(/\b(wider|wide|stereo|thicker|doubles?|doubled|stacks?|stacked|fuller|width)\b/))) ops.push({ add: 'width', v: (h.neg ? -15 : 15) * k });
   else if (/\b(narrower|narrow|mono|centered|centred)\b/.test(t)) ops.push({ add: 'width', v: -15 * k });
   // tone
@@ -7225,7 +7401,9 @@ function suiteParse(text) {
   else if (/\b(compress\w*|squash|punch\w*|tight(er)?|controlled|consistent|even(er)? out|glue\w*|jumps? out|jumpy|all over the place)\b/.test(t)) ops.push({ add: 'compress', v: 15 * k });
   if (/\b(1176|fet)\b/.test(t)) ops.push({ character: 'fet' }); else if (/\b(la-?2a|opto)\b/.test(t)) ops.push({ character: 'opto' }); else if (/\b(rvox|leveller|leveler)\b/.test(t)) ops.push({ character: 'vox' });
   if (/\b(less|lower|softer|reduce) gat\w*|\bgate (is )?(cutting|chopping)|\b(chopp\w*|cuts? off (my|the) (words|ends))/.test(t)) ops.push({ add: 'gate', v: -25 * k });
-  else if (/\b(noise|noisy|hiss|hissing|background|room sound|gate|fan|hum)\b/.test(t)) ops.push({ add: 'gate', v: 25 * k });
+  else if (/\b(noise cancel\w*|denoise|remove (the |room |static |background )?noise|get rid of (the )?noise|static noise|static\b|hiss\b|hum\w*|fan noise|background noise|clean up (the )?noise)\b/.test(t)) ops.push({ add: 'nc', v: 25 * k });
+  else if (/\b(noise|noisy|background|room sound|gate|fan|hum)\b/.test(t)) ops.push({ add: 'gate', v: 25 * k });
+  if (/\b(de-?echo\w*|de-?reverb\w*|remove (the |room )?(echo|echoes|reverb)|take (out|off) the (echo|reverb|room)|boxy|echoey|echo in the (room|recording)|roomy|too much room)\b/.test(t)) ops.push({ add: 'deecho', v: 25 * k });
   if (/\b(louder|turn (it )?up|more volume|too quiet|too soft)\b/.test(t)) ops.push({ out: 2 * k }); else if (/\b(quieter|turn (it )?down|less volume|too loud)\b/.test(t)) ops.push({ out: -2 * k });
   return ops;
 }
@@ -7310,7 +7488,7 @@ async function suiteSend(ins, text) {
   } else {
     const said = suiteRun(ins, ops), art = ops.find(o => o.artist);
     chat.push({ who: 'bot', text: said.length ? (art && !SUITE_ARTISTS.find(a => a.id === art.artist).chain ? said.join(' · ') + '\nIt’s my take on their sound, so tweak it to taste.' : said.join(' · '))
-      : unknownArtist ? 'I don’t have that artist yet. Try Chris Brown, Bieber, Kid LAROI, MGK, The Weeknd, Drake, Travis Scott, Post Malone, Juice WRLD, Billie Eilish, Ariana, SZA, Frank Ocean, T-Pain, Future or Bruno Mars.'
+      : unknownArtist ? 'I don’t have that artist yet. Try Chris Brown, Bieber, Kid LAROI, MGK, The Weeknd, Drake, Travis Scott, Pop Smoke, Kanye, Post Malone, Juice WRLD, Billie Eilish, Ariana, SZA, Frank Ocean, T-Pain, Future or Bruno Mars.'
       : 'Tell me how it should sound: “more autotune”, “brighter”, “less reverb”, “warmer”, “wider”, “Drake preset in C# minor”, “too harsh”…' });
   }
   if (ops.some(o => o.listen || o.match)) { // fit the (new) preset to your voice and say what changed
@@ -7522,14 +7700,24 @@ async function suiteLive(ins) {
 function renderVocalChat() { if (ui.tab === 'vocal') renderView(); }
 const SUITE_BOT_SVG = '<svg viewBox="0 0 64 52"><rect x="4" y="6" width="56" height="38" rx="7" class="b"/><rect x="12" y="13" width="40" height="17" rx="4" class="w"/><circle cx="23" cy="21.5" r="5.5" class="r"/><circle cx="41" cy="21.5" r="5.5" class="r"/><g class="sp"><path d="M23 17v9M18.5 21.5h9" class="s"/></g><g class="sp2"><path d="M41 17v9M36.5 21.5h9" class="s"/></g><path d="M25 36q7 5 14 0" class="m"/><path d="M14 44l3 5h30l3-5" class="b2"/><circle cx="32" cy="3" r="2.4" class="a"/><path d="M32 5v2" class="s"/></svg>';
 function suiteVoice(ins) {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SR) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SR) { toast('Voice typing isn’t available in this browser — Chrome or Edge can do it. Type it for now.'); return; }
   if (ui.vsRec) { try { ui.vsRec.stop(); } catch (e) { /* ok */ } return; }
-  const r = new SR(); ui.vsRec = r; r.lang = navigator.language || 'en-US'; r.interimResults = true; r.maxAlternatives = 1;
+  const r = new SR(); ui.vsRec = r; r.lang = navigator.language || 'en-US'; r.interimResults = true; r.maxAlternatives = 1; r.continuous = false;
   let finalText = '';
   r.onresult = e => { let s = ''; for (const res of e.results) { s += res[0].transcript; if (res.isFinal) finalText = s; } const i = $('.vs-ask input'); if (i) i.value = s; };
-  r.onerror = e => { toast(e.error === 'not-allowed' ? 'The mic is blocked here, so type it instead.' : 'Didn’t catch that. Try again or type it.'); };
+  r.onerror = e => {
+    // the desktop app has Chromium’s speech engine but not Google’s speech service, so it fails with "network":
+    // say what to do instead of failing silently
+    const msg = e.error === 'network' ? 'Voice typing needs an internet connection — Chrome’s speech service is online only. Type it instead, or use the same page in Chrome or Edge.'
+      : e.error === 'not-allowed' ? 'The mic is blocked for voice typing. Allow the mic in the address bar (or Windows Settings › Privacy › Microphone), then press the mic again.'
+      : e.error === 'no-speech' ? 'Voice typing heard nothing. Press the mic, wait for it to start, then speak.'
+      : e.error === 'audio-capture' ? 'Voice typing couldn’t open a mic (another app may be holding it). Close it, then try again or type it.'
+      : e.error === 'service-not-allowed' ? 'Voice typing isn’t available here. In the desktop app, type it — or dictate with Windows (Win+H) into the field.'
+      : 'Voice typing stopped before hearing anything. Press the mic again, or type it.';
+    if (!(finalText || e.error === 'aborted')) toast(msg);
+  };
   r.onend = () => { ui.vsRec = null; ui.vsListening = false; const b = $('.vs-mic'); if (b) b.classList.remove('on'); const i = $('.vs-ask input'); const q = finalText || (i && i.value); if (q) { if (i) i.value = ''; suiteSend(ins, q); } };
-  try { r.start(); ui.vsListening = true; const b = $('.vs-mic'); if (b) b.classList.add('on'); } catch (e) { ui.vsRec = null; }
+  try { r.start(); ui.vsListening = true; const b = $('.vs-mic'); if (b) b.classList.add('on'); toast('Listening — say it, then stop talking', { ms: 1800 }); } catch (e) { ui.vsRec = null; }
 }
 function suiteKnob(ins, id, map) {
   const d = SUITE_MACROS[id], present = suiteRoles(d, map).every(r => map[r] && !map[r].bypass), val = suiteRoles(d, map).every(r => map[r]) ? d.get(map) : (d.off ?? d.def);
@@ -7569,7 +7757,7 @@ function suitePanel(ins, tab, map) {
     const feel = el('div', { class: 'vs-feel' }, TUNE_FEELS.map(([id, lab, rt]) => el('button', { class: 'vs-chip' + (tf && tuneFeelOf(tf) === id ? ' lit' : ''), onclick: () => { const t = TUNE_FEELS.find(x => x[0] === id); mutate(P => { suiteEnsure(P, ins, ['tune']); const f = suiteClassify(P.mixer[ins].fx).tune; f.bypass = false; Object.assign(f.params, { retune: t[2], humanize: t[3], flex: t[4], fcorr: t[5] }); }); } }, lab)));
     return [headRow, el('div', { class: 'vs-tune' }, keyBox, note, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex', 'depth', 'formant']), feel))];
   }
-  if (tab === 'cleanup') return [headRow, knobs(['gate', 'deess', 'tamer', 'lowcut']), el('p', { class: 'vs-hint' }, 'Noise gate quiets the room between phrases, De-ess tames S sounds, Tamer pulls down harsh ringing.')];
+  if (tab === 'cleanup') return [headRow, knobs(['gate', 'nc', 'deecho', 'deess', 'tamer', 'lowcut']), el('p', { class: 'vs-hint' }, 'Noise removal takes out static hiss, hum and fan noise, De-echo tightens room echo around your lines, De-ess tames S sounds, Tamer pulls down harsh ringing, Noise gate quiets everything between phrases.')];
   if (tab === 'tone') return [headRow, knobs(['warmth', 'presence', 'air', 'grit']), map.eqm ? el('p', { class: 'vs-hint' }, 'Listen & Match’s EQ stays underneath; these are your moves on top.') : null];
   if (tab === 'dynamics') {
     const ch = map.comp ? map.comp.params.mode : null, setCh = c => { suiteWrite(ins, suiteCharacter(map, c)); renderView(); };
@@ -7755,6 +7943,8 @@ const SUITE_TARGETS = {
   frank: { lra: 6, sib: -10, tilt: [[150, 0.5], [300, 1], [700, 0.5], [2500, 0], [6000, 0], [12000, 0.5]] },
   tpain: { lra: 4, sib: -9, tilt: [[500, 0], [1000, 1], [2000, 1.5], [3500, 1], [6000, 0.5], [12000, 0.5]] },
   future: { lra: 4, sib: -9, tilt: [[200, 0.5], [500, 0.5], [1200, 1], [2500, 0.5], [6000, -0.5], [12000, -1]] },
+  pop: { lra: 4, sib: -8, tilt: [[150, 1], [300, 1], [800, 0.5], [2500, -1], [5000, -2], [9000, -2], [14000, -2]] },
+  kanye: { lra: 4, sib: -9, tilt: [[200, 0.5], [400, 0.5], [1200, 0.5], [3000, 1], [7000, 0.5], [12000, 0]] },
   bruno: { lra: 5, sib: -9, tilt: [[300, -0.5], [1500, 0.5], [3000, 1.5], [5000, 1], [10000, 1]] },
 };
 const suiteTargetLabel = id => { const a = SUITE_ARTISTS.find(x => x.id === id); return a ? a.name : CHAINS[id] ? CHAINS[id].label : 'Clean vocal'; };
@@ -7869,8 +8059,21 @@ async function suiteMatch(ins, opts = {}) {
       const voice = lmVoiceType(a), tunes = fx.filter(f => f.plugin === 'th.autotune');
       if (tunes.some(f => (f.params.voice || 'tenor') !== voice)) { tunes.forEach(f => { f.params.voice = voice; }); did.push(`Tune set for ${{ low: 'a low voice', tenor: 'a mid-range voice', soprano: 'a high voice' }[voice]}, so it tracks all your notes`); }
       if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
+        // the room is audible: spectral noise removal beats a gate, which only helps between phrases
+        const want = Math.round(clamp(45 + (30 - (a.activeDb - a.noiseDb)) * 2.5, 45, 85));
+        suiteEnsure(Q, ins, ['nc']); map = suiteClassify(fx); map.nc.bypass = false;
+        const cur = Math.round(+map.nc.params.amount * 100);
+        if (want > cur + 4) { map.nc.params.amount = +(want / 100).toFixed(2); did.push(`Noise removal at ${want}%: your room is ${(a.activeDb - a.noiseDb).toFixed(0)} dB above silence, so hiss and hum come out while you sing`) }
+        else if (!map.gate || map.gate.bypass) did.push('Noise removal already covers the room noise');
+      }
+      if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
         const target = Math.round(clamp(a.noiseDb + 6, -80, -30));
-        if (!map.gate || map.gate.bypass || +map.gate.params.target < target - 3) { suiteEnsure(Q, ins, ['gate']); map = suiteClassify(fx); map.gate.bypass = false; map.gate.params.target = target; did.push('Gate on, to hide the room noise between your lines'); }
+        if (!map.gate || map.gate.bypass || +map.gate.params.target < target - 3) { suiteEnsure(Q, ins, ['gate']); map = suiteClassify(fx); map.gate.bypass = false; map.gate.params.target = target; }
+      }
+      if (a.wetDb != null && a.wetDb > -30) { // the take carries audible room echo: tighten it before anything else hears it
+        suiteEnsure(Q, ins, ['deecho']); map = suiteClassify(fx); map.deecho.bypass = false;
+        const want = Math.round(clamp(30 + (-a.wetDb - 20) * 2.2, 30, 80)), cur = Math.round(+map.deecho.params.amount * 100);
+        if (want > cur + 4) { map.deecho.params.amount = +(want / 100).toFixed(2); did.push(`De-echo at ${want}%: your room rings on after your lines, so the tail gets pulled down`) }
       }
       const sx = a.sibRel - tg.sib;
       if (sx > 1.5) { suiteEnsure(Q, ins, ['deess']); map = suiteClassify(fx); const want = clamp(40 + sx * 8, 40, 90), cur = clamp(+map.deess.params.range / 0.12, 0, 100); if (want > cur + 5) { Object.assign(map.deess.params, SUITE_MACROS.deess.set(want, map).deess); map.deess.bypass = false; did.push(`Your S sounds are sharper than ${tg.label}’s, so the de-esser works harder`); } }

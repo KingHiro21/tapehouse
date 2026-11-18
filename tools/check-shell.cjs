@@ -202,9 +202,10 @@ async function run() {
     calls.downloadHandler({ preventDefault() {} }, bounce, page);
 
     const asked = calls.saveDialogs[0];
+    const wantPath = require('path').join('/downloads', 'Tapehouse Bounce.wav'); // joined the way main.js does, so the shape matches on every OS
     check('export asks where to save', calls.saveDialogs.length === 1 && !!asked, `${calls.saveDialogs.length} dialogs`);
     check('dialog starts in Downloads with the export name',
-      !!asked && asked.options.defaultPath === '/downloads/Tapehouse Bounce.wav', asked && asked.options.defaultPath);
+      !!asked && asked.options.defaultPath === wantPath, asked && asked.options.defaultPath);
     check('WAV exports offer a WAV filter',
       !!asked && asked.options.filters[0].extensions.join(',') === 'wav', asked && JSON.stringify(asked.options.filters));
     check('chosen folder is used', bounce.savePath === 'D:/Sessions/Bounce.wav', bounce.savePath);

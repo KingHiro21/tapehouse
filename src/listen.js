@@ -185,7 +185,7 @@ function lmStyleParts(style) {
   const space = ch.fx.filter(([pl]) => ['th.doubler', 'th.chorus', 'th.tape-delay', 'th.pingpong', 'th.room-reverb'].includes(pl));
   return { tune: tune && tune[1], sat: sat && sat[1], space };
 }
-const LM_ROLES = { gate: 'Noise gate', level: 'Input level', tune: 'Tune', eq: 'EQ match', comp: 'Compress', comp2: 'Glue', sat: 'Saturate', tamer: 'Tamer', deess: 'De-ess', width: 'Width', delay: 'Delay', reverb: 'Reverb', safe: 'Limiter' };
+const LM_ROLES = { gate: 'Noise gate', nc: 'Noise removal', deecho: 'De-echo', level: 'Input level', tune: 'Tune', eq: 'EQ match', comp: 'Compress', comp2: 'Glue', sat: 'Saturate', tamer: 'Tamer', deess: 'De-ess', width: 'Width', delay: 'Delay', reverb: 'Reverb', safe: 'Limiter' };
 /* Target numbers for this match: from a style, or measured from an a cappella. */
 function lmTarget(M) {
   const st = LM_STYLES[M.style] || LM_STYLES.clean;
@@ -205,7 +205,11 @@ function lmBuildChain(M) {
   const proc = 0.4 + 0.75 * i, wet = 0.5 + 0.625 * i, off = new Set(M.off || []), fx = [];
   const add = (role, pl, params) => { const f = fxSlot(pl, { ...params, _role: role }); f.bypass = off.has(role); fx.push(f); };
   const R = Math.max(0, a.lra * 0.8 - t.lra);
-  if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) add('gate', 'th.vocal-comp', { mode: 'gate', target: clamp(a.noiseDb + 6, -80, -20) });
+  if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
+    add('nc', 'th.denoise', { amount: +clamp(0.45 + (30 - (a.activeDb - a.noiseDb)) * 0.025, 0.45, 0.85).toFixed(2) });
+    add('gate', 'th.vocal-comp', { mode: 'gate', target: clamp(a.noiseDb + 6, -80, -20) });
+  }
+  if (a.wetDb != null && a.wetDb > -30) add('deecho', 'th.dereverb', { amount: +clamp(0.3 + (-a.wetDb - 20) * 0.022, 0.3, 0.8).toFixed(2) });
   add('level', 'th.vocal-comp', { mode: 'auto', target: -20 });
   if (parts.tune) add('tune', 'th.autotune', { ...parts.tune, voice: lmVoiceType(a) });
   const gains = lmFitEq(lmDesired(M)), eq = { lowcut: lmLowCut(a) }; gains.forEach((g, k) => { eq['g' + k] = g; });

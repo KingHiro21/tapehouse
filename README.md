@@ -2,8 +2,7 @@
 
 A browser DAW: FL Studio–style editing with AI song generation, built to be easier than FL.
 
-- `src/` — the app, split into files (engine, vocal, app, plus, studio, listen, suite, create) plus `style.css` and `body.html`.
-- `build.sh` — assembles `src/` into `dist/`.
+- `src/` — the app, split into files (engine, vocal, app, plus, studio, listen, suite, create) plus `style.css` and `body.html`.- `build.sh` — assembles `src/` into `dist/`.
   - `dist/tapehouse-preview.html` — the page for claude.ai (the mic does not work inside a preview).
   - `dist/Tapehouse.html` — the recording edition: open it in Chrome or Edge to record with your mic.
 
@@ -39,6 +38,22 @@ Needs Node 18+. `npm run build` (or `./build.sh`) still just writes `dist/`.
 Projects save as `.tapehouse` bundles. The installer registers that extension, so
 double-clicking one opens it; a file dropped onto `Tapehouse.exe` (or passed to a
 second launch of an open app) opens in the window that is already running.
+
+### The vocal tools (v2.3)
+
+The Vocal screen carries Tune (pitch correction with formant fix so it doesn't sound robotic),
+Cleanup, Tone, Dynamics and Space, artist presets (Chris Brown, Bieber, Kid LAROI, MGK, The Weeknd,
+Drake, Travis Scott, Pop Smoke, Kanye, Post Malone, Juice WRLD, Billie Eilish, Ariana, SZA,
+Frank Ocean, T-Pain, Future, Bruno Mars), and an assistant you can type to or talk to.
+
+- **Noise Removal** learns the static hiss, hum and fan noise behind your voice (a spectral
+  floor tracker frozen while you sing) and turns it down during and between phrases.
+- **De-echo** tightens room echo: per-bin envelopes that rise with onsets but decay faster
+  than the room, so tails are pulled down while notes and consonants pass through.
+- **Voice typing** (the mic in the assistant's chat box) uses the browser's speech service —
+  it needs Chrome or Edge with internet; the desktop app explains what to use instead.
+- Listen & Match and the assistant set Noise Removal and De-echo by themselves when they hear
+  an audible room, and they say so in "What I changed".
 
 ### After installing, check the file hooks
 

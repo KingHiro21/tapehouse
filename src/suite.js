@@ -5,9 +5,11 @@
    ===================================================================== */
 
 /* ---------- the chain behind the suite ---------- */
-const SUITE_ORDER = ['gate', 'level', 'tune', 'eqm', 'eq', 'comp', 'comp2', 'sat', 'tamer', 'deess', 'width', 'delay', 'reverb', 'safe'];
+const SUITE_ORDER = ['gate', 'nc', 'deecho', 'level', 'tune', 'eqm', 'eq', 'comp', 'comp2', 'sat', 'tamer', 'deess', 'width', 'delay', 'reverb', 'safe'];
 const SUITE_DEF = { // added only when a control needs them, set so they change nothing until you turn them
   gate: ['th.vocal-comp', { mode: 'gate', target: -80 }],
+  nc: ['th.denoise', { amount: 0, floor: -18 }],
+  deecho: ['th.dereverb', { amount: 0, floor: -12 }],
   level: ['th.vocal-comp', { mode: 'auto', target: -20 }],
   tune: ['th.autotune', { retune: 20, humanize: 0.15, flex: 0.1, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'off', root: -1, smode: 'minor' }],
   eqm: ['th.match-eq', { lowcut: 30, g0: 0, g1: 0, g2: 0, g3: 0, g4: 0, g5: 0, g6: 0, g7: 0, g8: 0, g9: 0, g10: 0 }],
@@ -22,7 +24,7 @@ const SUITE_DEF = { // added only when a control needs them, set so they change 
   reverb: ['th.room-reverb', { size: 1.8, damp: 8500, predelay: 0.02, mix: 0 }],
   safe: ['th.limiter', { ceiling: -1, release: 80 }],
 };
-const SUITE_MODS = [['tune', 'Tune', ['tune']], ['cleanup', 'Cleanup', ['gate', 'tamer', 'deess']], ['tone', 'Tone', ['eqm', 'eq', 'sat']], ['dynamics', 'Dynamics', ['level', 'comp', 'comp2']], ['space', 'Space', ['width', 'delay', 'reverb']]];
+const SUITE_MODS = [['tune', 'Tune', ['tune']], ['cleanup', 'Cleanup', ['gate', 'nc', 'deecho', 'tamer', 'deess']], ['tone', 'Tone', ['eqm', 'eq', 'sat']], ['dynamics', 'Dynamics', ['level', 'comp', 'comp2']], ['space', 'Space', ['width', 'delay', 'reverb']]];
 /* Which effect on the insert plays which part, whether it came from a preset, Listen & Match or the suite itself. */
 function suiteClassify(fx) {
   const map = {}; let comps = 0;
@@ -277,6 +279,8 @@ const SUITE_MACROS = {
   humanize: { mod: 'tune', label: 'Humanize', min: 0, max: 100, step: 1, def: 15, fmt: pct, roles: ['tune'], get: M => Math.round(+(M.tune.params.humanize ?? 0.2) * 100), set: v => ({ tune: { humanize: v / 100 } }) },
   flex: { mod: 'tune', label: 'Flex', min: 0, max: 100, step: 1, def: 10, fmt: pct, roles: ['tune'], get: M => Math.round(+(M.tune.params.flex ?? 0) * 100), set: v => ({ tune: { flex: v / 100 } }) },
   gate: { off: 0, mod: 'cleanup', label: 'Noise gate', min: 0, max: 100, def: 0, fmt: pct, roles: ['gate'], get: M => clamp((+M.gate.params.target + 80) / 0.5, 0, 100), set: v => ({ gate: { target: -80 + v * 0.5 } }) },
+  nc: { off: 0, mod: 'cleanup', label: 'Noise removal', min: 0, max: 100, def: 70, fmt: pct, roles: ['nc'], get: M => clamp(+M.nc.params.amount * 100, 0, 100), set: v => ({ nc: { amount: +(v / 100).toFixed(2) } }) },
+  deecho: { off: 0, mod: 'cleanup', label: 'De-echo', min: 0, max: 100, def: 50, fmt: pct, roles: ['deecho'], get: M => clamp(+M.deecho.params.amount * 100, 0, 100), set: v => ({ deecho: { amount: +(v / 100).toFixed(2) } }) },
   deess: { off: 0, mod: 'cleanup', label: 'De-ess', min: 0, max: 100, def: 40, fmt: pct, roles: ['deess'], get: M => clamp(+M.deess.params.range / 0.12, 0, 100), set: v => ({ deess: { range: v * 0.12, thresh: -24 - v * 0.14 } }) },
   tamer: { off: 0, mod: 'cleanup', label: 'Tamer', min: 0, max: 100, def: 30, fmt: pct, roles: ['tamer'], get: M => clamp(+M.tamer.params.depth / 0.1, 0, 100), set: v => ({ tamer: { depth: v * 0.1 } }) },
   lowcut: { off: 30, mod: 'cleanup', label: 'Low cut', min: 30, max: 300, curve: 'log', def: 90, fmt: v => Math.round(v) + ' Hz', roles: M => [M.eqm ? 'eqm' : 'eq'], get: M => +((M.eqm || M.eq).params.lowcut ?? 90), set: (v, M) => ({ [M.eqm ? 'eqm' : 'eq']: { lowcut: Math.round(v) } }) },
@@ -335,9 +339,15 @@ const SUITE_ARTISTS = [
   { id: 'bieber', name: 'Justin Bieber', al: ['justin bieber', 'bieber'], chain: 'bieber' },
   { id: 'laroi', name: 'Kid LAROI', al: ['the kid laroi', 'kid laroi', 'laroi'], chain: 'laroi' },
   { id: 'mgk', name: 'MGK', al: ['machine gun kelly', 'mgk'], chain: 'mgk' },
-  { id: 'weeknd', name: 'The Weeknd', al: ['the weeknd', 'weeknd', 'weekend', 'abel'], s: { retune: 22, humanize: 20, warmth: -1, presence: 1, air: 4, compress: 55, deess: 50, tamer: 35, width: 35, delay: 25, reverb: 40, size: 3.2 }, ch: 'opto', time: 1 },
-  { id: 'drake', name: 'Drake', al: ['drake', 'drizzy'], s: { retune: 28, humanize: 25, warmth: 1, presence: 1, air: 1.5, compress: 55, deess: 45, tamer: 30, width: 8, delay: 8, reverb: 12, size: 1.4 }, ch: 'fet', time: 0.5 },
-  { id: 'travis', name: 'Travis Scott', al: ['travis scott', 'travis', 'la flame'], s: { retune: 1, humanize: 0, presence: 1.5, air: 2.5, grit: 25, compress: 60, deess: 50, tamer: 40, width: 35, delay: 35, reverb: 40, size: 3.5 }, ch: 'fet', time: 0.75, hard: true },
+  { id: 'weeknd', name: 'The Weeknd', al: ['the weeknd', 'weeknd', 'weekend', 'abel'], s: { retune: 22, humanize: 20, warmth: -1, presence: 1, air: 4, compress: 55, deess: 50, tamer: 35, width: 35, delay: 25, reverb: 40, size: 3.2, predelay: 30 }, ch: 'opto', time: 1 },
+  { id: 'drake', name: 'Drake', al: ['drake', 'drizzy'], s: { retune: 22, humanize: 20, warmth: 0.5, presence: 1.5, air: 3, compress: 55, deess: 45, tamer: 30, width: 8, delay: 6, reverb: 10, size: 1 }, ch: 'fet', time: 0.5 },
+  // 40’s chain (Sound On Sound, on “Headlines”): Auto-Tune just to centre the pitch, RVox, de-esser, Pultec air, and a
+  // punchy compressor last. The beat is degraded instead of the vocal, so the top end belongs to the voice (air 3) and
+  // the space is a short plate, not a hall.
+  { id: 'travis', name: 'Travis Scott', al: ['travis scott', 'travis', 'la flame'], s: { retune: 1, humanize: 0, presence: 1.5, air: 2.5, grit: 25, compress: 60, deess: 50, tamer: 40, width: 35, delay: 35, reverb: 40, size: 3.5, predelay: 35 }, ch: 'fet', time: 0.75, hard: true },
+  { id: 'posty', name: 'Post Malone', al: ['post malone', 'posty'], s: { retune: 12, humanize: 10, warmth: 1, presence: 0.5, air: 2, grit: 8, compress: 55, deess: 45, tamer: 35, width: 25, delay: 22, reverb: 30, size: 2.4 }, ch: 'vox', time: 0.5 },
+  { id: 'pop', name: 'Pop Smoke', al: ['pop smoke', 'popsmoke', 'woo'], s: { retune: 0, humanize: 0, warmth: 1.5, presence: 1, air: 0.5, grit: 15, compress: 65, deess: 40, tamer: 30, width: 10, delay: 10, reverb: 22, size: 1.6 }, ch: 'fet', time: 0.5, hard: true },
+  { id: 'kanye', name: 'Kanye West', al: ['kanye west', 'kanye', 'ye '], s: { retune: 0, humanize: 5, warmth: 0.5, presence: 1.5, air: 2, grit: 10, compress: 60, deess: 45, tamer: 35, width: 20, delay: 12, reverb: 18, size: 1.8 }, ch: 'fet', time: 0.5, hard: true },
   { id: 'posty', name: 'Post Malone', al: ['post malone', 'posty'], s: { retune: 12, humanize: 10, warmth: 1, presence: 0.5, air: 2, grit: 8, compress: 55, deess: 45, tamer: 35, width: 25, delay: 22, reverb: 30, size: 2.4 }, ch: 'vox', time: 0.5 },
   { id: 'juice', name: 'Juice WRLD', al: ['juice wrld', 'juice world', 'juicewrld'], s: { retune: 6, humanize: 10, warmth: 0.5, presence: 1.5, air: 2, grit: 12, compress: 55, deess: 45, tamer: 40, width: 28, delay: 22, reverb: 30, size: 2.6 }, ch: 'vox', time: 0.5, hard: true },
   { id: 'billie', name: 'Billie Eilish', al: ['billie eilish', 'billie'], s: { retune: 35, humanize: 35, flex: 30, warmth: 1.5, air: 3, compress: 60, deess: 60, tamer: 40, width: 10, delay: 10, reverb: 18, size: 1.6 }, ch: 'opto', time: 0.5, natural: true },
@@ -349,7 +359,7 @@ const SUITE_ARTISTS = [
   { id: 'bruno', name: 'Bruno Mars', al: ['bruno mars', 'bruno'], s: { retune: 30, humanize: 25, warmth: 0.5, presence: 2, air: 2, compress: 60, deess: 50, tamer: 35, width: 15, delay: 12, reverb: 20, size: 1.8 }, ch: 'fet', time: 0.5, natural: true },
 ];
 function suiteFresh(P, ins) {
-  P.mixer[ins].fx = SUITE_ORDER.filter(r => r !== 'eqm' && r !== 'gate').map(r => fxSlot(SUITE_DEF[r][0], { ...SUITE_DEF[r][1] }));
+  P.mixer[ins].fx = SUITE_ORDER.filter(r => !['eqm', 'gate', 'nc', 'deecho'].includes(r)).map(r => fxSlot(SUITE_DEF[r][0], { ...SUITE_DEF[r][1] }));
 }
 function suiteApplyArtist(P, ins, a) {
   if (a.chain) { P.mixer[ins].fx = CHAINS[a.chain].fx.map(([pl, params]) => fxSlot(pl, { ...params })); return; }
@@ -357,9 +367,11 @@ function suiteApplyArtist(P, ins, a) {
   const map = suiteClassify(P.mixer[ins].fx);
   for (const [id, v] of Object.entries(a.s)) { const ch = SUITE_MACROS[id].set(v, map); for (const r in ch) if (map[r]) Object.assign(map[r].params, ch[r]); }
   if (a.ch) map.comp.params.mode = a.ch;
+  // formant fix stays on unless the artist is explicitly the hard-tuned sound: formants that follow the pitch shift are
+  // what makes a corrected voice read as robotic, and “automatically sound good” means natural first
+  map.tune.params.fcorr = a.hard ? 'off' : 'on';
   map.comp.params.output = +suiteMakeup(map.comp.params.mode, a.s.compress || 0).toFixed(2);
   if (a.time) map.delay.params.time = a.time;
-  map.tune.params.fcorr = a.natural ? 'on' : 'off';
 }
 
 /* ---------- presets ---------- */
@@ -428,7 +440,11 @@ function suiteParse(text) {
   else if (/\b(bypass|turn (it|everything|the effects?) off|raw (vocal|voice|sound))\b/.test(t)) ops.push({ bypass: true });
   // tuning
   let h;
-  if (/\b(robot|robotic|hard[- ]?tune|hard tuned|super tuned|t-?pain effect)\b/.test(t) && !art) ops.push({ set: 'retune', v: 0 }, { set: 'humanize', v: 0 }, { fcorr: 'off' }, { tuneOn: true });
+  // “sounds like a robot” / “too robotic” wants LESS of the hard tune; only an explicit robot/hard-tune request sets it
+  const robotFix = /\b(too robot\w*|less robot\w*|sounds? like a robot|sound like a robot|like a robot\b|not robot\w*|no robot\w*|don'?t want (it |to sound )?robot\w*)\b/.test(t);
+  const robotMake = !robotFix && (/\b(hard[- ]?tune|hard tuned|super tuned|t-?pain effect)\b/.test(t) || /\brobot\w*\b/.test(t)) && !art;
+  if (robotMake) ops.push({ set: 'retune', v: 0 }, { set: 'humanize', v: 0 }, { fcorr: 'off' }, { tuneOn: true });
+  else if (robotFix) ops.push({ set: 'retune', v: 35 }, { set: 'humanize', v: 35 }, { fcorr: 'on' }, { tuneOn: true });
   else if (/\b(no autotune|without autotune|autotune off|turn off (the )?autotune|no tun|untuned|raw pitch)\w*/.test(t)) ops.push({ tuneOff: true });
   else if (/\b(natural|transparent|subtle tun\w*|less obvious|not obvious|invisible)\b/.test(t) && !art) ops.push({ set: 'retune', v: 40 }, { set: 'humanize', v: 35 }, { fcorr: 'on' }, { tuneOn: true });
   else if ((h = has(/\b(autotune|tune|tuning|pitch correction|tuned|pitchy|off[- ]key)\b/))) {
@@ -441,7 +457,7 @@ function suiteParse(text) {
   if ((h = has(/\b(reverb|verb|hall|room)\b/))) ops.push(/\bno (reverb|verb)\b/.test(t) ? { set: 'reverb', v: 0 } : { add: 'reverb', v: (h.neg ? -15 : 15) * k });
   if (/\b(bigger|huge|massive|larger|longer) (room|space|reverb|hall|tail)\b/.test(t)) ops.push({ add: 'size', v: 0.8 * k });
   else if (/\b(smaller|shorter|tighter) (room|space|reverb|tail)\b/.test(t)) ops.push({ add: 'size', v: -0.6 * k });
-  if ((h = has(/\b(delay|echo|echoes|slapback|slap)\b/))) ops.push(/\bno (delay|echo)/.test(t) ? { set: 'delay', v: 0 } : { add: 'delay', v: (h.neg ? -15 : 15) * k });
+  if ((h = has(/\b(delay|echo|echoes|slapback|slap)\b/)) && !/\b(de-?echo\w*|de-?reverb\w*|remove (the |room )?(echo|echoes|reverb)|take (out|off) the (echo|reverb|room)|boxy|echoey|echo in the (room|recording)|roomy|too much room)\b/.test(t)) ops.push(/\bno (delay|echo)/.test(t) ? { set: 'delay', v: 0 } : { add: 'delay', v: (h.neg ? -15 : 15) * k });
   if ((h = has(/\b(wider|wide|stereo|thicker|doubles?|doubled|stacks?|stacked|fuller|width)\b/))) ops.push({ add: 'width', v: (h.neg ? -15 : 15) * k });
   else if (/\b(narrower|narrow|mono|centered|centred)\b/.test(t)) ops.push({ add: 'width', v: -15 * k });
   // tone
@@ -460,7 +476,9 @@ function suiteParse(text) {
   else if (/\b(compress\w*|squash|punch\w*|tight(er)?|controlled|consistent|even(er)? out|glue\w*|jumps? out|jumpy|all over the place)\b/.test(t)) ops.push({ add: 'compress', v: 15 * k });
   if (/\b(1176|fet)\b/.test(t)) ops.push({ character: 'fet' }); else if (/\b(la-?2a|opto)\b/.test(t)) ops.push({ character: 'opto' }); else if (/\b(rvox|leveller|leveler)\b/.test(t)) ops.push({ character: 'vox' });
   if (/\b(less|lower|softer|reduce) gat\w*|\bgate (is )?(cutting|chopping)|\b(chopp\w*|cuts? off (my|the) (words|ends))/.test(t)) ops.push({ add: 'gate', v: -25 * k });
-  else if (/\b(noise|noisy|hiss|hissing|background|room sound|gate|fan|hum)\b/.test(t)) ops.push({ add: 'gate', v: 25 * k });
+  else if (/\b(noise cancel\w*|denoise|remove (the |room |static |background )?noise|get rid of (the )?noise|static noise|static\b|hiss\b|hum\w*|fan noise|background noise|clean up (the )?noise)\b/.test(t)) ops.push({ add: 'nc', v: 25 * k });
+  else if (/\b(noise|noisy|background|room sound|gate|fan|hum)\b/.test(t)) ops.push({ add: 'gate', v: 25 * k });
+  if (/\b(de-?echo\w*|de-?reverb\w*|remove (the |room )?(echo|echoes|reverb)|take (out|off) the (echo|reverb|room)|boxy|echoey|echo in the (room|recording)|roomy|too much room)\b/.test(t)) ops.push({ add: 'deecho', v: 25 * k });
   if (/\b(louder|turn (it )?up|more volume|too quiet|too soft)\b/.test(t)) ops.push({ out: 2 * k }); else if (/\b(quieter|turn (it )?down|less volume|too loud)\b/.test(t)) ops.push({ out: -2 * k });
   return ops;
 }
@@ -545,7 +563,7 @@ async function suiteSend(ins, text) {
   } else {
     const said = suiteRun(ins, ops), art = ops.find(o => o.artist);
     chat.push({ who: 'bot', text: said.length ? (art && !SUITE_ARTISTS.find(a => a.id === art.artist).chain ? said.join(' · ') + '\nIt’s my take on their sound, so tweak it to taste.' : said.join(' · '))
-      : unknownArtist ? 'I don’t have that artist yet. Try Chris Brown, Bieber, Kid LAROI, MGK, The Weeknd, Drake, Travis Scott, Post Malone, Juice WRLD, Billie Eilish, Ariana, SZA, Frank Ocean, T-Pain, Future or Bruno Mars.'
+      : unknownArtist ? 'I don’t have that artist yet. Try Chris Brown, Bieber, Kid LAROI, MGK, The Weeknd, Drake, Travis Scott, Pop Smoke, Kanye, Post Malone, Juice WRLD, Billie Eilish, Ariana, SZA, Frank Ocean, T-Pain, Future or Bruno Mars.'
       : 'Tell me how it should sound: “more autotune”, “brighter”, “less reverb”, “warmer”, “wider”, “Drake preset in C# minor”, “too harsh”…' });
   }
   if (ops.some(o => o.listen || o.match)) { // fit the (new) preset to your voice and say what changed
@@ -757,14 +775,24 @@ async function suiteLive(ins) {
 function renderVocalChat() { if (ui.tab === 'vocal') renderView(); }
 const SUITE_BOT_SVG = '<svg viewBox="0 0 64 52"><rect x="4" y="6" width="56" height="38" rx="7" class="b"/><rect x="12" y="13" width="40" height="17" rx="4" class="w"/><circle cx="23" cy="21.5" r="5.5" class="r"/><circle cx="41" cy="21.5" r="5.5" class="r"/><g class="sp"><path d="M23 17v9M18.5 21.5h9" class="s"/></g><g class="sp2"><path d="M41 17v9M36.5 21.5h9" class="s"/></g><path d="M25 36q7 5 14 0" class="m"/><path d="M14 44l3 5h30l3-5" class="b2"/><circle cx="32" cy="3" r="2.4" class="a"/><path d="M32 5v2" class="s"/></svg>';
 function suiteVoice(ins) {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SR) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SR) { toast('Voice typing isn’t available in this browser — Chrome or Edge can do it. Type it for now.'); return; }
   if (ui.vsRec) { try { ui.vsRec.stop(); } catch (e) { /* ok */ } return; }
-  const r = new SR(); ui.vsRec = r; r.lang = navigator.language || 'en-US'; r.interimResults = true; r.maxAlternatives = 1;
+  const r = new SR(); ui.vsRec = r; r.lang = navigator.language || 'en-US'; r.interimResults = true; r.maxAlternatives = 1; r.continuous = false;
   let finalText = '';
   r.onresult = e => { let s = ''; for (const res of e.results) { s += res[0].transcript; if (res.isFinal) finalText = s; } const i = $('.vs-ask input'); if (i) i.value = s; };
-  r.onerror = e => { toast(e.error === 'not-allowed' ? 'The mic is blocked here, so type it instead.' : 'Didn’t catch that. Try again or type it.'); };
+  r.onerror = e => {
+    // the desktop app has Chromium’s speech engine but not Google’s speech service, so it fails with "network":
+    // say what to do instead of failing silently
+    const msg = e.error === 'network' ? 'Voice typing needs an internet connection — Chrome’s speech service is online only. Type it instead, or use the same page in Chrome or Edge.'
+      : e.error === 'not-allowed' ? 'The mic is blocked for voice typing. Allow the mic in the address bar (or Windows Settings › Privacy › Microphone), then press the mic again.'
+      : e.error === 'no-speech' ? 'Voice typing heard nothing. Press the mic, wait for it to start, then speak.'
+      : e.error === 'audio-capture' ? 'Voice typing couldn’t open a mic (another app may be holding it). Close it, then try again or type it.'
+      : e.error === 'service-not-allowed' ? 'Voice typing isn’t available here. In the desktop app, type it — or dictate with Windows (Win+H) into the field.'
+      : 'Voice typing stopped before hearing anything. Press the mic again, or type it.';
+    if (!(finalText || e.error === 'aborted')) toast(msg);
+  };
   r.onend = () => { ui.vsRec = null; ui.vsListening = false; const b = $('.vs-mic'); if (b) b.classList.remove('on'); const i = $('.vs-ask input'); const q = finalText || (i && i.value); if (q) { if (i) i.value = ''; suiteSend(ins, q); } };
-  try { r.start(); ui.vsListening = true; const b = $('.vs-mic'); if (b) b.classList.add('on'); } catch (e) { ui.vsRec = null; }
+  try { r.start(); ui.vsListening = true; const b = $('.vs-mic'); if (b) b.classList.add('on'); toast('Listening — say it, then stop talking', { ms: 1800 }); } catch (e) { ui.vsRec = null; }
 }
 function suiteKnob(ins, id, map) {
   const d = SUITE_MACROS[id], present = suiteRoles(d, map).every(r => map[r] && !map[r].bypass), val = suiteRoles(d, map).every(r => map[r]) ? d.get(map) : (d.off ?? d.def);
@@ -804,7 +832,7 @@ function suitePanel(ins, tab, map) {
     const feel = el('div', { class: 'vs-feel' }, TUNE_FEELS.map(([id, lab, rt]) => el('button', { class: 'vs-chip' + (tf && tuneFeelOf(tf) === id ? ' lit' : ''), onclick: () => { const t = TUNE_FEELS.find(x => x[0] === id); mutate(P => { suiteEnsure(P, ins, ['tune']); const f = suiteClassify(P.mixer[ins].fx).tune; f.bypass = false; Object.assign(f.params, { retune: t[2], humanize: t[3], flex: t[4], fcorr: t[5] }); }); } }, lab)));
     return [headRow, el('div', { class: 'vs-tune' }, keyBox, note, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex', 'depth', 'formant']), feel))];
   }
-  if (tab === 'cleanup') return [headRow, knobs(['gate', 'deess', 'tamer', 'lowcut']), el('p', { class: 'vs-hint' }, 'Noise gate quiets the room between phrases, De-ess tames S sounds, Tamer pulls down harsh ringing.')];
+  if (tab === 'cleanup') return [headRow, knobs(['gate', 'nc', 'deecho', 'deess', 'tamer', 'lowcut']), el('p', { class: 'vs-hint' }, 'Noise removal takes out static hiss, hum and fan noise, De-echo tightens room echo around your lines, De-ess tames S sounds, Tamer pulls down harsh ringing, Noise gate quiets everything between phrases.')];
   if (tab === 'tone') return [headRow, knobs(['warmth', 'presence', 'air', 'grit']), map.eqm ? el('p', { class: 'vs-hint' }, 'Listen & Match’s EQ stays underneath; these are your moves on top.') : null];
   if (tab === 'dynamics') {
     const ch = map.comp ? map.comp.params.mode : null, setCh = c => { suiteWrite(ins, suiteCharacter(map, c)); renderView(); };
@@ -990,6 +1018,8 @@ const SUITE_TARGETS = {
   frank: { lra: 6, sib: -10, tilt: [[150, 0.5], [300, 1], [700, 0.5], [2500, 0], [6000, 0], [12000, 0.5]] },
   tpain: { lra: 4, sib: -9, tilt: [[500, 0], [1000, 1], [2000, 1.5], [3500, 1], [6000, 0.5], [12000, 0.5]] },
   future: { lra: 4, sib: -9, tilt: [[200, 0.5], [500, 0.5], [1200, 1], [2500, 0.5], [6000, -0.5], [12000, -1]] },
+  pop: { lra: 4, sib: -8, tilt: [[150, 1], [300, 1], [800, 0.5], [2500, -1], [5000, -2], [9000, -2], [14000, -2]] },
+  kanye: { lra: 4, sib: -9, tilt: [[200, 0.5], [400, 0.5], [1200, 0.5], [3000, 1], [7000, 0.5], [12000, 0]] },
   bruno: { lra: 5, sib: -9, tilt: [[300, -0.5], [1500, 0.5], [3000, 1.5], [5000, 1], [10000, 1]] },
 };
 const suiteTargetLabel = id => { const a = SUITE_ARTISTS.find(x => x.id === id); return a ? a.name : CHAINS[id] ? CHAINS[id].label : 'Clean vocal'; };
@@ -1104,8 +1134,21 @@ async function suiteMatch(ins, opts = {}) {
       const voice = lmVoiceType(a), tunes = fx.filter(f => f.plugin === 'th.autotune');
       if (tunes.some(f => (f.params.voice || 'tenor') !== voice)) { tunes.forEach(f => { f.params.voice = voice; }); did.push(`Tune set for ${{ low: 'a low voice', tenor: 'a mid-range voice', soprano: 'a high voice' }[voice]}, so it tracks all your notes`); }
       if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
+        // the room is audible: spectral noise removal beats a gate, which only helps between phrases
+        const want = Math.round(clamp(45 + (30 - (a.activeDb - a.noiseDb)) * 2.5, 45, 85));
+        suiteEnsure(Q, ins, ['nc']); map = suiteClassify(fx); map.nc.bypass = false;
+        const cur = Math.round(+map.nc.params.amount * 100);
+        if (want > cur + 4) { map.nc.params.amount = +(want / 100).toFixed(2); did.push(`Noise removal at ${want}%: your room is ${(a.activeDb - a.noiseDb).toFixed(0)} dB above silence, so hiss and hum come out while you sing`) }
+        else if (!map.gate || map.gate.bypass) did.push('Noise removal already covers the room noise');
+      }
+      if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
         const target = Math.round(clamp(a.noiseDb + 6, -80, -30));
-        if (!map.gate || map.gate.bypass || +map.gate.params.target < target - 3) { suiteEnsure(Q, ins, ['gate']); map = suiteClassify(fx); map.gate.bypass = false; map.gate.params.target = target; did.push('Gate on, to hide the room noise between your lines'); }
+        if (!map.gate || map.gate.bypass || +map.gate.params.target < target - 3) { suiteEnsure(Q, ins, ['gate']); map = suiteClassify(fx); map.gate.bypass = false; map.gate.params.target = target; }
+      }
+      if (a.wetDb != null && a.wetDb > -30) { // the take carries audible room echo: tighten it before anything else hears it
+        suiteEnsure(Q, ins, ['deecho']); map = suiteClassify(fx); map.deecho.bypass = false;
+        const want = Math.round(clamp(30 + (-a.wetDb - 20) * 2.2, 30, 80)), cur = Math.round(+map.deecho.params.amount * 100);
+        if (want > cur + 4) { map.deecho.params.amount = +(want / 100).toFixed(2); did.push(`De-echo at ${want}%: your room rings on after your lines, so the tail gets pulled down`) }
       }
       const sx = a.sibRel - tg.sib;
       if (sx > 1.5) { suiteEnsure(Q, ins, ['deess']); map = suiteClassify(fx); const want = clamp(40 + sx * 8, 40, 90), cur = clamp(+map.deess.params.range / 0.12, 0, 100); if (want > cur + 5) { Object.assign(map.deess.params, SUITE_MACROS.deess.set(want, map).deess); map.deess.bypass = false; did.push(`Your S sounds are sharper than ${tg.label}’s, so the de-esser works harder`); } }

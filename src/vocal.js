@@ -9,7 +9,9 @@
 class TuneCore {
   /* Look-ahead in samples. Grains reach half a window back and forth (plus formant stretch);
      live mode uses shorter grains so monitoring feels immediate, renders use the full-quality size. */
-  static grainHalf(sr, live, voice) { return Math.round(sr / (!live || voice === 'low' ? 110 : voice === 'soprano' ? 200 : 170)); }
+  /* Live grains are longer than they used to be (132 vs 170): a window shorter than the sung period locks phases badly and
+     reads as metallic. The extra ~4 ms of monitoring latency buys a much more natural sound. */
+  static grainHalf(sr, live, voice) { return Math.round(sr / (!live || voice === 'low' ? 110 : voice === 'soprano' ? 155 : 132)); }
   static latency(sr, live, voice) { return Math.ceil(TuneCore.grainHalf(sr, live, voice) * (1 + Math.pow(2, 3 / 12))) + 2; }
   constructor(sr, p) {
     this.sr = sr;
@@ -321,6 +323,144 @@ class DeHarshCore {
     }
   }
 }
+/* Streaming STFT scaffolding under the spectral clean-up modules (Noise removal, De-echo): Hann window, 75% overlap,
+   per-bin gains smoothed across frequency and time, and a phase-coherent mono path (stereo stays identical on both
+   sides, like Tune). Must stay self-contained (no outside helpers): the same source runs on the main thread
+   (fallback) and inside the AudioWorklet. */
+class SpecCore {
+  constructor(sr) {
+    this.sr = sr; this.N = 1024; this.hop = 256; this.L = this.N - this.hop; // 768 samples of look-ahead
+    this.win = new Float32Array(this.N);
+    for (let i = 0; i < this.N; i++) this.win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / this.N);
+    this.inr = new Float32Array(this.N * 2);      // input history
+    this.acc = new Float32Array(this.N * 2);      // overlap-add accumulator
+    this.re = new Float32Array(this.N); this.im = new Float32Array(this.N);
+    this.ore = new Float32Array(this.N); this.oim = new Float32Array(this.N);
+    this.nb = this.N / 2 + 1;
+    this.mag2 = new Float32Array(this.nb);
+    this.g = new Float32Array(this.nb).fill(1);   // smoothed per-bin gains
+    this.gt = new Float32Array(this.nb).fill(1);  // this frame's raw gains
+    this.n = 0; this.sDone = 0; this.eDone = -this.L;
+    this.att = Math.exp(-this.hop / (0.006 * sr)); this.rel = Math.exp(-this.hop / (0.08 * sr));
+    this.sm = 1; // how much the raw gains are smoothed across frequency (0 = per bin, 1 = fully smoothed)
+  }
+  fft(re, im) { // in-place radix-2
+    const N = this.N;
+    for (let i = 1, j = 0; i < N; i++) { let b = N >> 1; for (; j & b; b >>= 1) j ^= b; j ^= b; if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let len = 2; len <= N; len <<= 1) {
+      const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang), h = len >> 1;
+      for (let i = 0; i < N; i += len) {
+        let cr = 1, ci = 0;
+        for (let k = 0; k < h; k++) {
+          const a = i + k, b = a + h, vr = re[b] * cr - im[b] * ci, vi = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - vr; im[b] = im[a] - vi; re[a] += vr; im[a] += vi;
+          const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+        }
+      }
+    }
+  }
+  /* One frame: window, FFT, the subclass's per-bin gains, resynthesis, overlap-add. */
+  frame() {
+    const N = this.N, re = this.re, im = this.im, s = this.sDone, inr = this.inr, win = this.win, mask = N * 2 - 1;
+    for (let i = 0; i < N; i++) { re[i] = inr[(s + i) & mask] * win[i]; im[i] = 0; }
+    this.fft(re, im);
+    const nb = this.nb, mag = this.mag2;
+    for (let k = 0; k < nb; k++) mag[k] = re[k] * re[k] + im[k] * im[k];
+    this.gainsFor(mag);
+    // soften the raw gains a third of an octave either side, so isolated bins don't chatter (musical noise)
+    const gt = this.gt, sm = this.sm;
+    for (let k = 1; k < nb - 1; k++) gt[k] = gt[k] * (1 - sm) + (gt[k - 1] + 2 * gt[k] + gt[k + 1]) * 0.25 * sm;
+    gt[0] = (gt[0] + gt[1]) * 0.5 * sm + gt[0] * (1 - sm); gt[nb - 1] = (gt[nb - 1] + gt[nb - 2]) * 0.5 * sm + gt[nb - 1] * (1 - sm);
+    const g = this.g, att = this.att, rel = this.rel;
+    for (let k = 0; k < nb; k++) g[k] += (gt[k] - g[k]) * (gt[k] < g[k] ? att : rel);
+    // resynthesis: multiply the spectrum, invert (real/imag swap trick), window, overlap-add
+    const ore = this.ore, oim = this.oim;
+    for (let k = 0; k < nb; k++) { ore[k] = re[k] * g[k]; oim[k] = im[k] * g[k]; }
+    for (let k = 1; k < N / 2; k++) { ore[N - k] = ore[k]; oim[N - k] = -oim[k]; }
+    for (let k = 0; k < N; k++) { const v = ore[k]; ore[k] = oim[k]; oim[k] = v; } // swap, forward FFT, swap back = inverse (÷N below)
+    this.fft(ore, oim);
+    for (let k = 0; k < N; k++) { const v = ore[k]; ore[k] = oim[k]; oim[k] = v; }
+    const acc = this.acc, wn = win, norm = 2 / (3 * N); // swap-trick inverse includes ÷N; Hann² sums to 1.5 at 75% overlap
+    for (let i = 0; i < N; i++) acc[(s + i) & mask] += ore[i] * wn[i] * norm;
+  }
+  process(l, r, ol, or, len) {
+    const inr = this.inr, acc = this.acc, mask = this.N * 2 - 1, n0 = this.n;
+    for (let i = 0; i < len; i++) inr[(n0 + i) & mask] = r ? (l[i] + r[i]) * 0.5 : l[i];
+    this.n = n0 + len;
+    while (this.n - this.sDone >= this.N) { this.frame(); this.sDone += this.hop; }
+    let p = this.eDone;
+    for (let i = 0; i < len; i++, p++) {
+      if (p < 0) { ol[i] = 0; if (or) or[i] = 0; continue; } // the look-ahead primes as silence
+      const v = acc[p & mask]; acc[p & mask] = 0; ol[i] = v; if (or) or[i] = v;
+    }
+    this.eDone = p;
+  }
+}
+/* Noise removal: learns the static hiss and hum behind the voice and turns it down, while you sing or between phrases.
+   A per-bin minimum tracker follows the noise floor down fast and up slowly, so the voice never becomes the "noise";
+   loud, clearly voiced bins are left untouched, so sibilance and consonants keep their edge. */
+class DenoiseCore extends SpecCore {
+  constructor(sr, p) { super(sr); this.noise = new Float32Array(this.nb); this.p = { amount: 0.7, floor: -18 }; this.set(p || {}); }
+  set(p) {
+    for (const k in p) if (k in this.p) this.p[k] = +p[k];
+    this.k = 2.4 * Math.max(0, Math.min(1, this.p.amount)); // over-subtraction: how much of the floor is removed (0 = transparent)
+    this.floor = Math.pow(10, Math.max(-40, Math.min(-6, this.p.floor || -18)) / 20);
+    this.up = 1 - Math.exp(-this.hop / (0.4 * this.sr));  // the floor estimate rises quickly while the room is alone
+    this.dn = 1 - Math.exp(-this.hop / (0.03 * this.sr)); // and falls fast (30 ms)
+  }
+  gainsFor(mag) {
+    const nb = this.nb, noise = this.noise, gt = this.gt, k = this.k, up = this.up, dn = this.dn, floor = this.floor;
+    let loTot = 0; for (let i = 0; i < nb; i++) loTot += noise[i];
+    let tot = 0; for (let i = 0; i < nb; i++) tot += mag[i];
+    const live = tot > 1e-9, vad = live && tot > 8 * loTot; // the voice is in: freeze the floor so it never learns the notes
+    for (let i = 0; i < nb; i++) {
+      const m = mag[i]; let lo = noise[i];
+      if (lo === 0) lo = m;                    // first hearing of this bin: take the level as the floor
+      else if (lo > m * 1.4) lo += (m * 1.4 - lo) * dn; // the floor follows the level down fast
+      else if (!vad) lo += (m - lo) * up;      // and rises while the room is alone, never under a held note
+      noise[i] = lo;
+      let gr = 1;
+      if (live && lo > 1e-12) {
+        const a = k * lo;
+        gr = m > a ? 1 - a / m : floor;   // Wiener-style: take out what the floor explains, keep the rest
+        if (m > 60 * lo) gr = 1;          // clearly voiced bins stay untouched
+      }
+      gt[i] = gr;
+    }
+  }
+}
+/* De-echo: tightens room echo and reverb tails around the voice. Per bin, an envelope that rises with onsets but
+   decays faster than a room does: while the level keeps falling (the tail) the bin is turned down, while onsets and
+   sustained notes pass through. Hits the boxy, echoey sound of singing in a hard-walled room; very heavy tails only
+   get tighter, not gone. */
+class DeEchoCore extends SpecCore {
+  constructor(sr, p) { super(sr); this.env = new Float32Array(this.nb); this.p = { amount: 0.5, floor: -12 }; this.set(p || {}); }
+  set(p) {
+    for (const k in p) if (k in this.p) this.p[k] = +p[k];
+    const a = Math.max(0, Math.min(1, this.p.amount));
+    this.a = a; this.floor = Math.pow(10, Math.max(-30, Math.min(-6, this.p.floor || -12)) / 20);
+    this.atk = 1 - Math.exp(-this.hop / (0.002 * this.sr));               // an onset is an onset: 2 ms
+    this.dec = Math.exp(-this.hop / ((0.05 + 0.35 * a) * this.sr));       // the envelope decays faster than the room, so tails show up as level still hanging
+    this.rel = Math.exp(-this.hop / (0.04 * this.sr));                    // gains follow the tail quickly
+    this.sm = 0.35;                                                       // tails sit in broad bands, not single bins
+  }
+  gainsFor(mag) {
+    const nb = this.nb, env = this.env, gt = this.gt, floor = this.floor, atk = this.atk, dec = this.dec, amt = this.a;
+    const strength = 0.35 + 0.65 * amt;
+    for (let i = 0; i < nb; i++) {
+      const m = mag[i]; let e = env[i];
+      e = m > e ? e + (m - e) * atk : e * dec + m * (1 - dec);
+      env[i] = e;
+      let gr = 1;
+      if (e > 1e-12) {
+        const tail = 1 - (m / e) * 1.25; // how much of this bin is tail: onsets read 0, decayed tails read up to 1
+        if (tail > 0) { gr = 1 - strength * tail * (1 - floor); if (gr < floor) gr = floor; }
+      }
+      gt[i] = gr;
+    }
+  }
+}
+
 /* DSP-END */
 
 function dspModule() {
@@ -329,6 +469,9 @@ ${DeEssCore.toString()}
 ${CompCore.toString()}
 ${LimitCore.toString()}
 ${DeHarshCore.toString()}
+${SpecCore.toString()}
+${DenoiseCore.toString()}
+${DeEchoCore.toString()}
 class THTune extends AudioWorkletProcessor {
   constructor(o) { super(); const p = (o && o.processorOptions) || {}; this.c = new TuneCore(sampleRate, p); this.rep = !!p.report; this.m = new Float32Array(128); this.k = 0;
     this.port.onmessage = e => this.c.set(e.data); }
@@ -341,7 +484,7 @@ class THTune extends AudioWorkletProcessor {
   }
 }
 registerProcessor('th-tune', THTune);
-const CORES = { deess: DeEssCore, comp: CompCore, limit: LimitCore, deharsh: DeHarshCore };
+const CORES = { deess: DeEssCore, comp: CompCore, limit: LimitCore, deharsh: DeHarshCore, denoise: DenoiseCore, deecho: DeEchoCore };
 class THFx extends AudioWorkletProcessor {
   constructor(o) { super(); const p = (o && o.processorOptions) || {}; this.c = new CORES[p.kind](sampleRate, p); this.rep = !!p.report; this.k = 0; this.port.onmessage = e => this.c.set(e.data); }
   process(ins, outs) {
@@ -356,7 +499,7 @@ class THFx extends AudioWorkletProcessor {
 registerProcessor('th-fx', THFx);`;
 }
 
-const DSP_NODES = new Set(['tune', 'deess', 'comp', 'limit', 'deharsh']);
+const DSP_NODES = new Set(['tune', 'deess', 'comp', 'limit', 'deharsh', 'denoise', 'deecho']);
 function pluginUsesDsp(id) { const pl = plugins.get(id); return !!(pl && pl.manifest.graph && pl.manifest.graph.some(n => DSP_NODES.has(n.node))); }
 function usesDsp(P) { return P.mixer.some(m => m.fx.some(f => !f.bypass && pluginUsesDsp(f.plugin))); }
 /* 12-bit mask of the pitch classes Tune may snap to. root: below 0 follows the song key (the key at the top, which Smart key
@@ -402,7 +545,8 @@ function dspPrim(E, kind, makeCore, toParams) {
     input, output, probe() { return core ? (core.report ? core.report() : core.grDb !== undefined ? { gr: core.grDb } : null) : rep; },
     get latency() { // what this effect delays the signal by, so audio clips can start early and stay on the beat
       if (!node) return 0;
-      const own = kind === 'tune' ? (core ? core.L : TuneCore.latency(sr, last.live, last.voice)) : kind === 'limit' ? LimitCore.latency(sr) : 0;
+      const own = kind === 'tune' ? (core ? core.L : TuneCore.latency(sr, last.live, last.voice)) : kind === 'limit' ? LimitCore.latency(sr)
+        : kind === 'denoise' || kind === 'deecho' ? (core ? core.L : 768) : 0;
       return (own + (core ? B : 0)) / sr;
     },
     apply(s) { const p = last = toParams(E, s); if (!node) build(p); else if (core) core.set(p); else node.port.postMessage(p); },
@@ -419,6 +563,8 @@ PRIMS.comp = E => dspPrim(E, 'comp', (sr, p) => new CompCore(sr, p), (E2, s) => 
 PRIMS.limit = E => dspPrim(E, 'limit', (sr, p) => new LimitCore(sr, p), (E2, s) => ({ ceiling: clamp(+(s.ceiling ?? -1), -12, 0), release: clamp(+(s.release ?? 80), 5, 1000) }));
 PRIMS.deharsh = E => dspPrim(E, 'deharsh', (sr, p) => new DeHarshCore(sr, p), (E2, s) => ({ depth: clamp(+(s.depth ?? 5), 0, 18), sens: clamp(+(s.sens ?? 0.5), 0, 1) }));
 PRIMS.deess = E => dspPrim(E, 'deess', (sr, p) => new DeEssCore(sr, p), (E2, s) => ({ freq: clamp(+s.freq || 6500, 2000, 12000), thresh: clamp(+(s.thresh ?? -28), -60, 0), range: clamp(+(s.range ?? 8), 0, 24) }));
+PRIMS.denoise = E => dspPrim(E, 'denoise', (sr, p) => new DenoiseCore(sr, p), (E2, s) => ({ amount: clamp(+(s.amount ?? 0.7), 0, 1), floor: clamp(+(s.floor ?? -18), -40, -6) }));
+PRIMS.deecho = E => dspPrim(E, 'deecho', (sr, p) => new DeEchoCore(sr, p), (E2, s) => ({ amount: clamp(+(s.amount ?? 0.5), 0, 1), floor: clamp(+(s.floor ?? -12), -30, -6) }));
 /* Slowly drifting short delays panned left and right (two or four voices): a wide double that keeps the lead in the middle,
    in the spirit of Waves Doubler, MicroShift and Dimension D. */
 PRIMS.doubler = E => {
@@ -501,6 +647,16 @@ BUILTIN_PLUGINS.push(
       { id: 'depth', label: 'Depth', min: 0, max: 12, default: 5, unit: 'dB' },
       { id: 'sens', label: 'Sensitivity', min: 0, max: 1, default: 0.5, unit: '%' }],
     graph: [{ node: 'deharsh', depth: '$depth', sens: '$sens' }] },
+  { id: 'th.denoise', type: 'effect', name: 'Noise Removal', author: 'Tapehouse', description: 'Learns the static hiss, hum and fan noise behind your voice and turns it down while you sing and between phrases. Leave a second of silence before the first take so it hears the room.',
+    params: [
+      { id: 'amount', label: 'Amount', min: 0, max: 1, default: 0.7, unit: '%' },
+      { id: 'floor', label: 'Floor', min: -30, max: -6, default: -18, unit: 'dB' }],
+    graph: [{ node: 'denoise', amount: '$amount', floor: '$floor' }] },
+  { id: 'th.dereverb', type: 'effect', name: 'De-echo', author: 'Tapehouse', description: 'Tightens room echo and reverb tails around your voice: onsets and sustained notes pass through, the tail that rings on after them is turned down. Singing in a hard-walled room sounds closer.',
+    params: [
+      { id: 'amount', label: 'Amount', min: 0, max: 1, default: 0.5, unit: '%' },
+      { id: 'floor', label: 'Floor', min: -24, max: -6, default: -12, unit: 'dB' }],
+    graph: [{ node: 'deecho', amount: '$amount', floor: '$floor' }] },
   { id: 'th.limiter', type: 'effect', name: 'Limiter', author: 'Tapehouse', description: 'Safety limiter: nothing passes above the ceiling, so the chain can never clip.',
     params: [
       { id: 'ceiling', label: 'Ceiling', min: -6, max: 0, default: -1, unit: 'dB' },
