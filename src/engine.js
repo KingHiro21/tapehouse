@@ -7,7 +7,7 @@
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.2';
+const APP_VERSION = '2.4.3';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -767,8 +767,9 @@ class Engine {
        effects are reconnected in place (their internal state — Tune's grains, reverb tails — keeps running) and
        only the effects that are really gone are torn down. */
     const old = ins.fx, keep = new Map(); old.forEach(f => { if (f.input) keep.set(f.id, f); });
-    const links = []; let prevOut = ins.input; // sever exactly the old chain links, so reused nodes lose their stale neighbours
-    for (const f of old) if (f.input) { links.push([prevOut, f.input]); prevOut = f.output; }
+    const links = []; let prevOut = ins.input; // sever exactly the old chain links before building the new one:
+    for (const f of old) if (f.input) { links.push([prevOut, f.input]); prevOut = f.output; } // a reused pair whose
+    for (const [a, b] of links) { try { a.disconnect(b); } catch (e) { /* already gone */ } } // neighbours changed
     ins.fx = [];
     let node = ins.input;
     for (const f of m.fx) {
@@ -788,7 +789,6 @@ class Engine {
       inst.id = f.id; node.connect(inst.input); node = inst.output; ins.fx.push(inst);
     }
     for (const f of old) if (f.input && !ins.fx.includes(f)) f.dispose();
-    for (const [a, b] of links) { try { a.disconnect(b); } catch (e) { /* already gone */ } }
     node.connect(ins.vol); ins.sig = sig;
     Object.defineProperty(ins, 'latency', { configurable: true, get() { return this.fx.reduce((a, f) => a + (f.latency || 0), 0); } });
   }

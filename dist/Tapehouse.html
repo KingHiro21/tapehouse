@@ -1141,7 +1141,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.2';
+const APP_VERSION = '2.4.3';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -1901,8 +1901,9 @@ class Engine {
        effects are reconnected in place (their internal state — Tune's grains, reverb tails — keeps running) and
        only the effects that are really gone are torn down. */
     const old = ins.fx, keep = new Map(); old.forEach(f => { if (f.input) keep.set(f.id, f); });
-    const links = []; let prevOut = ins.input; // sever exactly the old chain links, so reused nodes lose their stale neighbours
-    for (const f of old) if (f.input) { links.push([prevOut, f.input]); prevOut = f.output; }
+    const links = []; let prevOut = ins.input; // sever exactly the old chain links before building the new one:
+    for (const f of old) if (f.input) { links.push([prevOut, f.input]); prevOut = f.output; } // a reused pair whose
+    for (const [a, b] of links) { try { a.disconnect(b); } catch (e) { /* already gone */ } } // neighbours changed
     ins.fx = [];
     let node = ins.input;
     for (const f of m.fx) {
@@ -1922,7 +1923,6 @@ class Engine {
       inst.id = f.id; node.connect(inst.input); node = inst.output; ins.fx.push(inst);
     }
     for (const f of old) if (f.input && !ins.fx.includes(f)) f.dispose();
-    for (const [a, b] of links) { try { a.disconnect(b); } catch (e) { /* already gone */ } }
     node.connect(ins.vol); ins.sig = sig;
     Object.defineProperty(ins, 'latency', { configurable: true, get() { return this.fx.reduce((a, f) => a + (f.latency || 0), 0); } });
   }
@@ -6153,13 +6153,25 @@ function studioFrame() {
       if (now - (REC.lastClip || 0) > 250) { REC.clipCount = (REC.clipCount || 0) + 1; REC.lastClip = now; if (REC.clipCount === 3) refreshRecPanel(); }
       REC.clipUntil = now + 1800;
     }
-    // feedback guard: speakers feeding the mic make a loud, steady tone; singing goes up and down
+    // feedback guard: a howling speaker loop is a loud, steady PURE TONE. Loud steady music (the beat playing
+    // through the speakers while Hear myself is on) is broadband, so a narrowband check keeps it from
+    // switching your monitoring off by mistake.
     if (REC.mon) {
       const dbv = 10 * Math.log10(sq / REC.mdata.length + 1e-12), H = REC.fbHist || (REC.fbHist = []);
       H.push([now, dbv]); while (H.length && now - H[0][0] > 1500) H.shift();
       if (H.length >= 40 && now - H[0][0] > 1400) { // a howl is very loud and almost perfectly steady for 1.5 s; a held sung note still wobbles
         const v = H.map(h => h[1]), mean = v.reduce((a, b) => a + b, 0) / v.length, sd = Math.sqrt(v.reduce((a, b) => a + (b - mean) * (b - mean), 0) / v.length);
-        if (mean > -12 && sd < 0.6) { REC.fbHist = []; setHearMyself(false); toast('Feedback: your speakers were feeding back into the mic, so Hear myself is off. Use headphones.', { kind: 'error', ms: 7000 }); }
+        if (mean > -12 && sd < 0.6) {
+          if (!(REC.fdata && REC.fdata.length === REC.meter.frequencyBinCount)) REC.fdata = new Float32Array(REC.meter.frequencyBinCount);
+          REC.meter.getFloatFrequencyData(REC.fdata);
+          let tot = 0, pk = 0, pki = 0;
+          for (let i = 0; i < REC.fdata.length; i++) { const p = Math.pow(10, REC.fdata[i] / 10); tot += p; if (p > pk) { pk = p; pki = i; } }
+          let nar = 0; for (let i = Math.max(0, pki - 3); i <= Math.min(REC.fdata.length - 1, pki + 3); i++) nar += Math.pow(10, REC.fdata[i] / 10);
+          if (tot > 0 && nar / tot > 0.7) { // over two thirds of all energy within ±3 bins of one peak: that's a howl
+            REC.fbHist = []; REC.fbAuto = now; setHearMyself(false);
+            toast('Feedback: your speakers were howling into the mic, so Hear myself is off. Use headphones, then press Hear myself again.', { kind: 'error', ms: 7000 });
+          }
+        }
       }
     } else if (REC.fbHist) REC.fbHist = null;
     const f = document.getElementById('inFill');
@@ -7075,6 +7087,8 @@ function suiteClassify(fx) {
       case 'th.vocal-eq': r = 'eq'; break;
       case 'th.saturator': r = 'sat'; break;
       case 'th.deharsh': r = 'tamer'; break;
+      case 'th.denoise': r = 'nc'; break;
+      case 'th.dereverb': r = 'deecho'; break;
       case 'th.deesser': r = 'deess'; break;
       case 'th.doubler': case 'th.chorus': r = 'width'; break;
       case 'th.tape-delay': case 'th.pingpong': r = 'delay'; break;
@@ -7776,7 +7790,7 @@ function vsRecord(ins, m) {
       el('span', { class: 'vs-hint' }, recording || saving ? 'Press Stop (or R) when you’re done.' : loopTxt),
       !recording && bar > 1 ? el('button', { class: 'vs-chip', onclick: () => { T.songPos = T.marker = 0; renderView(); } }, 'Start from the top') : null),
     el('div', { class: 'vs-rec-tog' },
-      el('button', { class: 'vs-chip big' + (REC.mon ? ' lit' : ''), 'aria-pressed': String(!!REC.mon), title: 'Hear yourself through the sound, with or without recording. Wear headphones.', onclick: () => suiteLive(ins) }, icon('phones'), REC.mon ? 'Hearing myself' : 'Hear myself'),
+      el('button', { class: 'vs-chip big' + (REC.mon ? ' lit' : ''), 'aria-pressed': String(!!REC.mon), title: REC.fbAuto && performance.now() - REC.fbAuto < 120000 ? 'Turned off after speaker feedback. Fix the volume (or use headphones), then press to hear yourself again.' : 'Hear yourself through the sound, with or without recording. Wear headphones.', onclick: () => suiteLive(ins) }, icon('phones'), REC.mon ? 'Hearing myself' : 'Hear myself'),
       tog('countIn', 'Count-in', 'One bar of clicks before recording starts'))));
   const opts = el('div', { class: 'vs-rec-opts' });
   if (REC.stream) opts.append(el('div', { class: 'vss-mic' }, el('span', { class: 'lbl' }, 'Mic'), el('span', { class: 'in-meter' }, el('i', { id: 'inFill' })), el('span', { id: 'vssMicTxt', class: 'vs-hint' }, 'Sing to check your level'), el('span', { class: 'in-clip', id: 'inClip', hidden: true }, 'Too loud')));
@@ -8255,19 +8269,19 @@ async function suiteMatch(ins, opts = {}) {
       if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
         // the room is audible: spectral noise removal beats a gate, which only helps between phrases
         const want = Math.round(clamp(45 + (30 - (a.activeDb - a.noiseDb)) * 2.5, 45, 85));
-        suiteEnsure(Q, ins, ['nc']); map = suiteClassify(fx); map.nc.bypass = false;
-        const cur = Math.round(+map.nc.params.amount * 100);
-        if (want > cur + 4) { map.nc.params.amount = +(want / 100).toFixed(2); did.push(`Noise removal at ${want}%: your room is ${(a.activeDb - a.noiseDb).toFixed(0)} dB above silence, so hiss and hum come out while you sing`) }
+        suiteEnsure(Q, ins, ['nc']); map = suiteClassify(fx); if (map.nc) map.nc.bypass = false;
+        const cur = Math.round(+(map.nc ? map.nc.params.amount : 0) * 100);
+        if (want > cur + 4 && map.nc) { map.nc.params.amount = +(want / 100).toFixed(2); did.push(`Noise removal at ${want}%: your room is ${(a.activeDb - a.noiseDb).toFixed(0)} dB above silence, so hiss and hum come out while you sing`) }
         else if (!map.gate || map.gate.bypass) did.push('Noise removal already covers the room noise');
       }
       if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
         const target = Math.round(clamp(a.noiseDb + 6, -80, -30));
-        if (!map.gate || map.gate.bypass || +map.gate.params.target < target - 3) { suiteEnsure(Q, ins, ['gate']); map = suiteClassify(fx); map.gate.bypass = false; map.gate.params.target = target; }
+        if (map.gate) { suiteEnsure(Q, ins, ['gate']); map = suiteClassify(fx); if (map.gate) { if (map.gate.bypass || +map.gate.params.target < target - 3) { map.gate.bypass = false; map.gate.params.target = target; } } }
       }
       if (a.wetDb != null && a.wetDb > -30) { // the take carries audible room echo: tighten it before anything else hears it
-        suiteEnsure(Q, ins, ['deecho']); map = suiteClassify(fx); map.deecho.bypass = false;
-        const want = Math.round(clamp(30 + (-a.wetDb - 20) * 2.2, 30, 80)), cur = Math.round(+map.deecho.params.amount * 100);
-        if (want > cur + 4) { map.deecho.params.amount = +(want / 100).toFixed(2); did.push(`De-echo at ${want}%: your room rings on after your lines, so the tail gets pulled down`) }
+        suiteEnsure(Q, ins, ['deecho']); map = suiteClassify(fx); if (map.deecho) map.deecho.bypass = false;
+        const want = Math.round(clamp(30 + (-a.wetDb - 20) * 2.2, 30, 80)), cur = Math.round(+(map.deecho ? map.deecho.params.amount : 0) * 100);
+        if (want > cur + 4 && map.deecho) { map.deecho.params.amount = +(want / 100).toFixed(2); did.push(`De-echo at ${want}%: your room rings on after your lines, so the tail gets pulled down`) }
       }
       const sx = a.sibRel - tg.sib;
       if (sx > 1.5) { suiteEnsure(Q, ins, ['deess']); map = suiteClassify(fx); const want = clamp(40 + sx * 8, 40, 90), cur = clamp(+map.deess.params.range / 0.12, 0, 100); if (want > cur + 5) { Object.assign(map.deess.params, SUITE_MACROS.deess.set(want, map).deess); map.deess.bypass = false; did.push(`Your S sounds are sharper than ${tg.label}’s, so the de-esser works harder`); } }
@@ -8283,7 +8297,7 @@ async function suiteMatch(ins, opts = {}) {
         else if (drift <= 12 && r0 <= 10 && !tg.artist) did.push(`You’re within ${Math.round(drift)} cents of the notes: nice and in tune`);
       }
       suiteEnsure(Q, ins, ['eqm']); map = suiteClassify(fx);
-      const eqm = map.eqm; eqm.bypass = false; eqm.params.lowcut = lmLowCut(a); LM_EQ.forEach((_, k) => { eqm.params['g' + k] = 0; });
+      const eqm = map.eqm; if (eqm) { eqm.bypass = false; eqm.params.lowcut = lmLowCut(a); LM_EQ.forEach((_, k) => { eqm.params['g' + k] = 0; }); }
       // tone, checked by ear (well, by measuring): through the preset as it is, then with the match EQ, then once more to refine
       busy(`Running your voice through ${tg.label}…`, 0.2);
       const out0 = await suiteRenderMeasure(fx, v.ex); if (token !== SVM.token) return;

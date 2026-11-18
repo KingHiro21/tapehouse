@@ -540,13 +540,25 @@ function studioFrame() {
       if (now - (REC.lastClip || 0) > 250) { REC.clipCount = (REC.clipCount || 0) + 1; REC.lastClip = now; if (REC.clipCount === 3) refreshRecPanel(); }
       REC.clipUntil = now + 1800;
     }
-    // feedback guard: speakers feeding the mic make a loud, steady tone; singing goes up and down
+    // feedback guard: a howling speaker loop is a loud, steady PURE TONE. Loud steady music (the beat playing
+    // through the speakers while Hear myself is on) is broadband, so a narrowband check keeps it from
+    // switching your monitoring off by mistake.
     if (REC.mon) {
       const dbv = 10 * Math.log10(sq / REC.mdata.length + 1e-12), H = REC.fbHist || (REC.fbHist = []);
       H.push([now, dbv]); while (H.length && now - H[0][0] > 1500) H.shift();
       if (H.length >= 40 && now - H[0][0] > 1400) { // a howl is very loud and almost perfectly steady for 1.5 s; a held sung note still wobbles
         const v = H.map(h => h[1]), mean = v.reduce((a, b) => a + b, 0) / v.length, sd = Math.sqrt(v.reduce((a, b) => a + (b - mean) * (b - mean), 0) / v.length);
-        if (mean > -12 && sd < 0.6) { REC.fbHist = []; setHearMyself(false); toast('Feedback: your speakers were feeding back into the mic, so Hear myself is off. Use headphones.', { kind: 'error', ms: 7000 }); }
+        if (mean > -12 && sd < 0.6) {
+          if (!(REC.fdata && REC.fdata.length === REC.meter.frequencyBinCount)) REC.fdata = new Float32Array(REC.meter.frequencyBinCount);
+          REC.meter.getFloatFrequencyData(REC.fdata);
+          let tot = 0, pk = 0, pki = 0;
+          for (let i = 0; i < REC.fdata.length; i++) { const p = Math.pow(10, REC.fdata[i] / 10); tot += p; if (p > pk) { pk = p; pki = i; } }
+          let nar = 0; for (let i = Math.max(0, pki - 3); i <= Math.min(REC.fdata.length - 1, pki + 3); i++) nar += Math.pow(10, REC.fdata[i] / 10);
+          if (tot > 0 && nar / tot > 0.7) { // over two thirds of all energy within ±3 bins of one peak: that's a howl
+            REC.fbHist = []; REC.fbAuto = now; setHearMyself(false);
+            toast('Feedback: your speakers were howling into the mic, so Hear myself is off. Use headphones, then press Hear myself again.', { kind: 'error', ms: 7000 });
+          }
+        }
       }
     } else if (REC.fbHist) REC.fbHist = null;
     const f = document.getElementById('inFill');

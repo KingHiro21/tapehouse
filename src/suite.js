@@ -36,6 +36,8 @@ function suiteClassify(fx) {
       case 'th.vocal-eq': r = 'eq'; break;
       case 'th.saturator': r = 'sat'; break;
       case 'th.deharsh': r = 'tamer'; break;
+      case 'th.denoise': r = 'nc'; break;
+      case 'th.dereverb': r = 'deecho'; break;
       case 'th.deesser': r = 'deess'; break;
       case 'th.doubler': case 'th.chorus': r = 'width'; break;
       case 'th.tape-delay': case 'th.pingpong': r = 'delay'; break;
@@ -737,7 +739,7 @@ function vsRecord(ins, m) {
       el('span', { class: 'vs-hint' }, recording || saving ? 'Press Stop (or R) when you’re done.' : loopTxt),
       !recording && bar > 1 ? el('button', { class: 'vs-chip', onclick: () => { T.songPos = T.marker = 0; renderView(); } }, 'Start from the top') : null),
     el('div', { class: 'vs-rec-tog' },
-      el('button', { class: 'vs-chip big' + (REC.mon ? ' lit' : ''), 'aria-pressed': String(!!REC.mon), title: 'Hear yourself through the sound, with or without recording. Wear headphones.', onclick: () => suiteLive(ins) }, icon('phones'), REC.mon ? 'Hearing myself' : 'Hear myself'),
+      el('button', { class: 'vs-chip big' + (REC.mon ? ' lit' : ''), 'aria-pressed': String(!!REC.mon), title: REC.fbAuto && performance.now() - REC.fbAuto < 120000 ? 'Turned off after speaker feedback. Fix the volume (or use headphones), then press to hear yourself again.' : 'Hear yourself through the sound, with or without recording. Wear headphones.', onclick: () => suiteLive(ins) }, icon('phones'), REC.mon ? 'Hearing myself' : 'Hear myself'),
       tog('countIn', 'Count-in', 'One bar of clicks before recording starts'))));
   const opts = el('div', { class: 'vs-rec-opts' });
   if (REC.stream) opts.append(el('div', { class: 'vss-mic' }, el('span', { class: 'lbl' }, 'Mic'), el('span', { class: 'in-meter' }, el('i', { id: 'inFill' })), el('span', { id: 'vssMicTxt', class: 'vs-hint' }, 'Sing to check your level'), el('span', { class: 'in-clip', id: 'inClip', hidden: true }, 'Too loud')));
@@ -1216,19 +1218,19 @@ async function suiteMatch(ins, opts = {}) {
       if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
         // the room is audible: spectral noise removal beats a gate, which only helps between phrases
         const want = Math.round(clamp(45 + (30 - (a.activeDb - a.noiseDb)) * 2.5, 45, 85));
-        suiteEnsure(Q, ins, ['nc']); map = suiteClassify(fx); map.nc.bypass = false;
-        const cur = Math.round(+map.nc.params.amount * 100);
-        if (want > cur + 4) { map.nc.params.amount = +(want / 100).toFixed(2); did.push(`Noise removal at ${want}%: your room is ${(a.activeDb - a.noiseDb).toFixed(0)} dB above silence, so hiss and hum come out while you sing`) }
+        suiteEnsure(Q, ins, ['nc']); map = suiteClassify(fx); if (map.nc) map.nc.bypass = false;
+        const cur = Math.round(+(map.nc ? map.nc.params.amount : 0) * 100);
+        if (want > cur + 4 && map.nc) { map.nc.params.amount = +(want / 100).toFixed(2); did.push(`Noise removal at ${want}%: your room is ${(a.activeDb - a.noiseDb).toFixed(0)} dB above silence, so hiss and hum come out while you sing`) }
         else if (!map.gate || map.gate.bypass) did.push('Noise removal already covers the room noise');
       }
       if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
         const target = Math.round(clamp(a.noiseDb + 6, -80, -30));
-        if (!map.gate || map.gate.bypass || +map.gate.params.target < target - 3) { suiteEnsure(Q, ins, ['gate']); map = suiteClassify(fx); map.gate.bypass = false; map.gate.params.target = target; }
+        if (map.gate) { suiteEnsure(Q, ins, ['gate']); map = suiteClassify(fx); if (map.gate) { if (map.gate.bypass || +map.gate.params.target < target - 3) { map.gate.bypass = false; map.gate.params.target = target; } } }
       }
       if (a.wetDb != null && a.wetDb > -30) { // the take carries audible room echo: tighten it before anything else hears it
-        suiteEnsure(Q, ins, ['deecho']); map = suiteClassify(fx); map.deecho.bypass = false;
-        const want = Math.round(clamp(30 + (-a.wetDb - 20) * 2.2, 30, 80)), cur = Math.round(+map.deecho.params.amount * 100);
-        if (want > cur + 4) { map.deecho.params.amount = +(want / 100).toFixed(2); did.push(`De-echo at ${want}%: your room rings on after your lines, so the tail gets pulled down`) }
+        suiteEnsure(Q, ins, ['deecho']); map = suiteClassify(fx); if (map.deecho) map.deecho.bypass = false;
+        const want = Math.round(clamp(30 + (-a.wetDb - 20) * 2.2, 30, 80)), cur = Math.round(+(map.deecho ? map.deecho.params.amount : 0) * 100);
+        if (want > cur + 4 && map.deecho) { map.deecho.params.amount = +(want / 100).toFixed(2); did.push(`De-echo at ${want}%: your room rings on after your lines, so the tail gets pulled down`) }
       }
       const sx = a.sibRel - tg.sib;
       if (sx > 1.5) { suiteEnsure(Q, ins, ['deess']); map = suiteClassify(fx); const want = clamp(40 + sx * 8, 40, 90), cur = clamp(+map.deess.params.range / 0.12, 0, 100); if (want > cur + 5) { Object.assign(map.deess.params, SUITE_MACROS.deess.set(want, map).deess); map.deess.bypass = false; did.push(`Your S sounds are sharper than ${tg.label}’s, so the de-esser works harder`); } }
@@ -1244,7 +1246,7 @@ async function suiteMatch(ins, opts = {}) {
         else if (drift <= 12 && r0 <= 10 && !tg.artist) did.push(`You’re within ${Math.round(drift)} cents of the notes: nice and in tune`);
       }
       suiteEnsure(Q, ins, ['eqm']); map = suiteClassify(fx);
-      const eqm = map.eqm; eqm.bypass = false; eqm.params.lowcut = lmLowCut(a); LM_EQ.forEach((_, k) => { eqm.params['g' + k] = 0; });
+      const eqm = map.eqm; if (eqm) { eqm.bypass = false; eqm.params.lowcut = lmLowCut(a); LM_EQ.forEach((_, k) => { eqm.params['g' + k] = 0; }); }
       // tone, checked by ear (well, by measuring): through the preset as it is, then with the match EQ, then once more to refine
       busy(`Running your voice through ${tg.label}…`, 0.2);
       const out0 = await suiteRenderMeasure(fx, v.ex); if (token !== SVM.token) return;
