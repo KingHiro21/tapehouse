@@ -7,7 +7,7 @@
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.9';
+const APP_VERSION = '2.5.0';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -166,7 +166,7 @@ function validatePlugin(o) {
     if (v.lfo && v.lfo.target && !['pitch', 'filter', 'amp'].includes(v.lfo.target)) fail('"lfo.target" must be pitch, filter or amp.');
     checkRefs(v, 'voice');
   } else if (!o.script) {
-    if (!Array.isArray(o.graph) || !o.graph.length || o.graph.length > 12) fail('An effect needs a "graph" with 1 to 12 nodes.');
+    if (!Array.isArray(o.graph) || !o.graph.length || o.graph.length > 16) fail('An effect needs a "graph" with 1 to 16 nodes.');
     for (const n of o.graph) if (!n || !PRIMS[n.node]) fail(`Unknown node "${n && n.node}". Use one of: ${Object.keys(PRIMS).join(', ')}.`);
     checkRefs(o.graph, 'graph');
   }

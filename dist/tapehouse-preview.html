@@ -1140,7 +1140,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.4.9';
+const APP_VERSION = '2.5.0';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -1299,7 +1299,7 @@ function validatePlugin(o) {
     if (v.lfo && v.lfo.target && !['pitch', 'filter', 'amp'].includes(v.lfo.target)) fail('"lfo.target" must be pitch, filter or amp.');
     checkRefs(v, 'voice');
   } else if (!o.script) {
-    if (!Array.isArray(o.graph) || !o.graph.length || o.graph.length > 12) fail('An effect needs a "graph" with 1 to 12 nodes.');
+    if (!Array.isArray(o.graph) || !o.graph.length || o.graph.length > 16) fail('An effect needs a "graph" with 1 to 16 nodes.');
     for (const n of o.graph) if (!n || !PRIMS[n.node]) fail(`Unknown node "${n && n.node}". Use one of: ${Object.keys(PRIMS).join(', ')}.`);
     checkRefs(o.graph, 'graph');
   }
@@ -5887,7 +5887,7 @@ async function doOpenMic() {
   if (REC.armed == null) { closeMic(); return false; }
   try {
     REC.src = ctx.createMediaStreamSource(REC.stream);
-    REC.meter = ctx.createAnalyser(); REC.meter.fftSize = 1024; REC.mdata = new Float32Array(1024); REC.src.connect(REC.meter);
+    REC.meter = ctx.createAnalyser(); REC.meter.fftSize = 4096; REC.mdata = new Float32Array(4096); REC.src.connect(REC.meter);
     await buildCapture();
   } catch (e) { REC.err = 'failed'; REC.errMsg = e.message; closeMic(); refreshRecPanel(); return false; }
   setMonitor(); listInputs(); refreshRecPanel();
@@ -6682,9 +6682,12 @@ const lmHz = f => f >= 1000 ? (f / 1000).toFixed(f % 1000 ? 1 : 0).replace('.0',
 BUILTIN_PLUGINS.push({ id: 'th.match-eq', type: 'effect', name: 'Match EQ', author: 'Tapehouse',
   description: 'The EQ curve Listen & Match fitted to your voice: a low cut plus eleven bands. Turn any band yourself afterwards.',
   params: [{ id: 'lowcut', label: 'Low cut', min: 30, max: 300, default: 80, curve: 'log', unit: 'Hz' },
-    ...LM_EQ.map((b, i) => ({ id: 'g' + i, label: lmHz(b.f), min: -12, max: 12, default: 0, unit: 'dB' }))],
+    ...LM_EQ.map((b, i) => ({ id: 'g' + i, label: lmHz(b.f), min: -12, max: 12, default: 0, unit: 'dB' })),
+    // output trim: lets an A/B comparison keep the same loudness instead of jumping when the cuts come off
+    { id: 'trim', label: 'Trim', min: -18, max: 6, default: 0, unit: 'dB' }],
   graph: [{ node: 'filter', filterType: 'highpass', frequency: '$lowcut', q: 0.71 },
-    ...LM_EQ.map((b, i) => ({ node: 'filter', filterType: b.type, frequency: b.f, q: b.q, gain: '$g' + i }))] });
+    ...LM_EQ.map((b, i) => ({ node: 'filter', filterType: b.type, frequency: b.f, q: b.q, gain: '$g' + i })),
+    { node: 'gain', gainDb: '$trim' }] });
 
 /* ---------- analysis ---------- */
 const LM_BANDS = (() => { const f = []; for (let k = -26; k <= 24; k++) { const fc = 1000 * Math.pow(2, k / 6); if (fc >= 50 && fc <= 16100) f.push(fc); } return f; })();
@@ -7154,6 +7157,29 @@ function suiteClassify(fx) {
   }
   return map;
 }
+/* A/B the tone match without changing the loudness: instead of taking the EQ out of the chain (which
+   jumped the level by however much it was cutting, slammed the compressors, and rebuilt the whole
+   chain mid-take), the bands go flat and the trim makes up exactly what the cuts were taking away.
+   Same loudness either way, so you hear the tone and not the volume. */
+function suiteMatchAB(m) {
+  const e = suiteClassify(m.fx).eqm; if (!e) return false;
+  const p = e.params = e.params || {};
+  if (!m.matchOff) {
+    const bands = LM_EQ.map((_, k) => +(p['g' + k] || 0));
+    const w = LM_EQ.map(b => (b.f >= 200 && b.f <= 6000 ? 2 : 1)); // the bands a voice actually lives in count double
+    const avg = bands.reduce((a, g, k) => a + g * w[k], 0) / w.reduce((a, v) => a + v, 0);
+    m.matchOff = { bands, lowcut: +p.lowcut || 80, trim: +(p.trim || 0) };
+    bands.forEach((_, k) => { p['g' + k] = 0; });
+    p.lowcut = 30; // the low cut is part of the match: get it out of the way too
+    p.trim = +clamp(-avg + (+p.trim || 0), -18, 6).toFixed(1);
+  } else {
+    const s = m.matchOff; delete m.matchOff;
+    s.bands.forEach((g, k) => { p['g' + k] = g; });
+    p.lowcut = s.lowcut; p.trim = s.trim;
+  }
+  e.bypass = false;
+  return true;
+}
 function suiteEnsure(P, ins, roles) {
   const m = P.mixer[ins];
   for (const role of [...roles, 'safe']) {
@@ -7481,7 +7507,7 @@ function suiteFresh(P, ins) {
 function suiteFreshMatch(ins) {
   const m = project.mixer[ins]; if (!m) return;
   clearTimeout(SVM.auto); SVM.token++; ui.vsM = null;
-  delete m.match; delete m.vsMatch;
+  delete m.match; delete m.vsMatch; delete m.matchOff;
 }
 function suiteApplyArtist(P, ins, a) {
   if (a.chain) { P.mixer[ins].fx = CHAINS[a.chain].fx.map(([pl, params]) => fxSlot(pl, { ...params })); return; }
@@ -7511,7 +7537,7 @@ function suiteLoadPreset(ins, p) {
     if (p.kind === 'artist') suiteApplyArtist(P, ins, SUITE_ARTISTS.find(a => a.id === p.id));
     else if (p.kind === 'chain') m.fx = CHAINS[p.id].fx.map(([pl, params]) => fxSlot(pl, { ...params }));
     else m.fx = p.fx.map(([pl, params]) => fxSlot(pl, { ...params }));
-    delete m.match; delete m.vsMatch;
+    delete m.match; delete m.vsMatch; delete m.matchOff;
     m.vsPreset = p.name; delete m.vsMod;
     m.vsTarget = p.kind === 'user' ? (p.target || m.vsTarget || 'clean') : p.id; // who this preset sounds like
   });
@@ -7826,7 +7852,7 @@ function vsAssist(ins, m) {
         el('div', { class: 'vsa-ctl' },
           el('label', { class: 'vsa-amt' }, el('span', {}, 'Tone match'), el('input', { type: 'range', min: '0', max: '100', step: '1', value: String(amt), 'aria-label': 'How strongly the tone is matched',
             oninput: e => { amtTxt.textContent = e.target.value + '%'; suiteMatchAmount(ins, +e.target.value / 100, 'drag'); }, onchange: () => { ui.vsDragged = false; } }), amtTxt),
-          eqm ? el('button', { class: 'vsa-ab' + (eqm.bypass ? '' : ' on'), 'aria-pressed': String(!eqm.bypass), title: 'Hear the preset with and without the tone match', onclick: () => mutate(P => { const e = suiteClassify(P.mixer[ins].fx).eqm; if (e) e.bypass = !e.bypass; }) }, eqm.bypass ? 'Match off' : 'Match on') : null)));
+          eqm ? el('button', { class: 'vsa-ab' + (m.matchOff ? '' : ' on'), 'aria-pressed': String(!m.matchOff), title: m.matchOff ? 'Turn the tone match back on (same loudness either way)' : 'Hear the preset with and without the tone match, at the same loudness', onclick: () => mutate(P => { suiteMatchAB(P.mixer[ins]); }) }, m.matchOff ? 'Match off' : 'Match on') : null)));
   }
   const chat = el('div', { class: 'vs-chat', id: 'vsChat', role: 'log', 'aria-live': 'polite' }, ui.vsChat.slice(-8).map(c => el('div', { class: 'vs-msg ' + c.who + (c.busy ? ' busy' : '') }, c.who === 'me' ? 'YOU: ' + c.text : c.greet ? suiteGreeting(ins, tg, M) : c.text)));
   const ask = el('form', { class: 'vs-ask', onsubmit: e => { e.preventDefault(); const i = e.target.elements.q; const q = i.value; i.value = ''; ui.vsFocus = true; suiteSend(ins, q); } },
@@ -8000,6 +8026,53 @@ function vsKeys(mask) {
     ...white.map(pc => el('i', { class: 'w' + (mask & (1 << pc) ? ' on' : ''), 'data-pc': String(pc) }, el('span', {}, KEY_MIN[pc]))),
     ...black.map(([pc, pos]) => el('i', { class: 'b' + (mask & (1 << pc) ? ' on' : ''), 'data-pc': String(pc), style: { left: `calc(${pos} * (100% / 7) - 0.3 * (100% / 7))` } })));
 }
+/* The note the Tune scale pulls a sung pitch to (the mask is a 12-bit set of pitch classes). */
+function snapToMask(midi, mask) {
+  if (!mask) return null;
+  let best = null, bd = 99;
+  for (let k = Math.floor(midi) - 6; k <= Math.ceil(midi) + 6; k++) {
+    if (!((mask >> (((k % 12) + 12) % 12)) & 1)) continue;
+    const d = Math.abs(k - midi); if (d < bd) { bd = d; best = k; }
+  }
+  return best;
+}
+/* A tuner should work whenever the mic is open, whatever the Tune effect is doing. This is a plain
+   autocorrelation detector on the live mic signal: Tune's own report is used when it has one (it knows
+   about its own voice-range setting), and this fills in whenever it doesn't - which is what left the
+   readout saying 'Listening…' forever for lower voices. */
+let pitchBuf = null, pitchAt = 0, pitchLast = null;
+function detectPitch(samples, sr) {
+  let rms = 0; for (let i = 0; i < samples.length; i++) rms += samples[i] * samples[i];
+  rms = Math.sqrt(rms / samples.length);
+  if (rms < 0.004) return null;
+  const minLag = Math.floor(sr / 1000), maxLag = Math.min(Math.floor(sr / 55), Math.floor(samples.length / 2));
+  if (maxLag <= minLag) return null;
+  const corr = new Float32Array(maxLag + 2);
+  let best = -1, bestLag = -1;
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let s = 0, e1 = 0, e2 = 0;
+    for (let i = 0, n = samples.length - lag; i < n; i++) { const a = samples[i], b = samples[i + lag]; s += a * b; e1 += a * a; e2 += b * b; }
+    const c = s / Math.sqrt(e1 * e2 + 1e-20); corr[lag] = c;
+    if (c > best) { best = c; bestLag = lag; }
+  }
+  if (best < 0.55 || bestLag < 0) return null;
+  for (let lag = minLag + 1; lag < bestLag; lag++) if (corr[lag] > best * 0.9) { bestLag = lag; break; } // an octave down is still periodic: take the lowest
+  const y0 = corr[bestLag - 1] || 0, y1 = corr[bestLag] || 0, y2 = corr[bestLag + 1] || 0;
+  const den = 2 * (2 * y1 - y0 - y2);
+  const lag = bestLag + (Math.abs(den) > 1e-9 ? clamp((y2 - y0) / den, -0.5, 0.5) : 0);
+  const f = sr / lag;
+  if (!(f > 50 && f < 1200)) return null;
+  return { midi: 69 + 12 * Math.log2(f / 440), f };
+}
+function tickPitch() {
+  const now = performance.now();
+  if (now - pitchAt < 90) return; pitchAt = now;
+  const an = REC.meter; if (!an || !REC.stream) { pitchLast = null; return; }
+  const n = an.fftSize; if (!pitchBuf || pitchBuf.length !== n) pitchBuf = new Float32Array(n);
+  an.getFloatTimeDomainData(pitchBuf);
+  // the last 2048 samples: enough for two periods of a low E2, short enough to follow a sung phrase
+  pitchLast = detectPitch(pitchBuf.subarray(Math.max(0, n - 2048)), ctx ? ctx.sampleRate : 48000);
+}
 /* Meters, the current-note display and gain reduction, while the Vocal tab is on screen. */
 let suiteRaf = 0, grShown = 0;
 function suiteTick(ins) {
@@ -8020,13 +8093,22 @@ function suiteTick(ins) {
     const nb = $('#vsNote'), nd = $('#vsNeedle'), ns = $('#vsNoteSub');
     if (nb && map.tune) {
       const f = e.fx.find(x => x.id === map.tune.id), r = f && f.probe ? f.probe() : null;
-      if (map.tune.bypass) { nb.textContent = '– –'; nd.classList.remove('on'); nd.style.left = '50%'; $$('.vs-keys i.sing, .vs-keys i.land').forEach(k => k.classList.remove('sing', 'land')); if (ns) ns.textContent = 'Tune is off — turn it on to watch it work'; }
-      if (r && r.v && r.t != null && (T.playing || REC.stream)) {
+      if (REC.stream) tickPitch();
+      const mine = REC.stream ? pitchLast : null; // the mic is open: the tuner reads the mic itself
+      if (map.tune.bypass && !mine) { nb.textContent = '– –'; nd.classList.remove('on'); nd.style.left = '50%'; $$('.vs-keys i.sing, .vs-keys i.land').forEach(k => k.classList.remove('sing', 'land')); if (ns) ns.textContent = 'Tune is off'; }
+      else if (mine) {
+        const near = Math.round(mine.midi), off = clamp((mine.midi - near) * 100, -50, 50), kp = ((near % 12) + 12) % 12;
+        const land = map.tune.bypass ? null : snapToMask(near, tuneMask(project, map.tune.params.scale, map.tune.params.root, map.tune.params.smode));
+        $$('.vs-keys i').forEach(k => { k.classList.toggle('sing', +k.dataset.pc === kp); k.classList.toggle('land', land != null && ((land % 12) + 12) % 12 === +k.dataset.pc && ((land % 12) + 12) % 12 !== kp); });
+        nb.textContent = noteName(near).replace(/-?\d+$/, ''); nd.style.left = (50 + off) + '%'; nd.classList.add('on'); nd.classList.toggle('ok', Math.abs(off) < 10);
+        if (ns) ns.textContent = map.tune.bypass ? `${off >= 0 ? '+' : '−'}${Math.abs(Math.round(off))} ct (Tune is off)` : `${off >= 0 ? '+' : '−'}${Math.abs(Math.round(off))} ct, Tune lands it on ${noteName(land == null ? near : land).replace(/-?\d+$/, '')}`;
+      }
+      else if (r && r.v && r.t != null) {
         const near = Math.round(r.m), off = clamp((r.m - near) * 100, -50, 50), kp = ((near % 12) + 12) % 12, tp = ((Math.round(r.t) % 12) + 12) % 12;
         $$('.vs-keys i').forEach(k => { k.classList.toggle('sing', +k.dataset.pc === kp); k.classList.toggle('land', +k.dataset.pc === tp && tp !== kp); });
         nb.textContent = noteName(near).replace(/-?\d+$/, ''); nd.style.left = (50 + off) + '%'; nd.classList.add('on'); nd.classList.toggle('ok', Math.abs(off) < 10);
         if (ns) ns.textContent = `${off >= 0 ? '+' : '−'}${Math.abs(Math.round(off))} ct, Tune lands it on ${noteName(r.t).replace(/-?\d+$/, '')}`;
-      } else { nb.textContent = '– –'; nd.classList.remove('on'); nd.style.left = '50%'; $$('.vs-keys i.sing, .vs-keys i.land').forEach(k => k.classList.remove('sing', 'land')); if (ns) ns.textContent = T.playing || REC.stream ? 'Listening…' : 'Sing or play a vocal'; }
+      } else { nb.textContent = '– –'; nd.classList.remove('on'); nd.style.left = '50%'; $$('.vs-keys i.sing, .vs-keys i.land').forEach(k => k.classList.remove('sing', 'land')); if (ns) ns.textContent = T.playing ? 'Waiting for a vocal…' : REC.stream ? 'Sing a note' : 'Press Hear myself or Record, then sing'; }
     }
     const dly = $('#vsDelay');
     if (dly) {
@@ -8377,7 +8459,7 @@ async function suiteMatch(ins, opts = {}) {
         else if (drift <= 12 && r0 <= 10 && !tg.artist) did.push(`You’re within ${Math.round(drift)} cents of the notes: nice and in tune`);
       }
       suiteEnsure(Q, ins, ['eqm']); map = suiteClassify(fx);
-      const eqm = map.eqm; if (eqm) { eqm.bypass = false; eqm.params.lowcut = lmLowCut(a); LM_EQ.forEach((_, k) => { eqm.params['g' + k] = 0; }); }
+      const eqm = map.eqm; if (eqm) { eqm.bypass = false; eqm.params.lowcut = lmLowCut(a); eqm.params.trim = 0; delete m.matchOff; LM_EQ.forEach((_, k) => { eqm.params['g' + k] = 0; }); }
       // tone, checked by ear (well, by measuring): through the preset as it is, then with the match EQ, then once more to refine
       busy(`Running your voice through ${tg.label}…`, 0.2);
       const out0 = await suiteRenderMeasure(fx, v.ex); if (token !== SVM.token) return;

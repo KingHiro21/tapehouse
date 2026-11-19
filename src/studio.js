@@ -222,7 +222,7 @@ async function doOpenMic() {
   if (REC.armed == null) { closeMic(); return false; }
   try {
     REC.src = ctx.createMediaStreamSource(REC.stream);
-    REC.meter = ctx.createAnalyser(); REC.meter.fftSize = 1024; REC.mdata = new Float32Array(1024); REC.src.connect(REC.meter);
+    REC.meter = ctx.createAnalyser(); REC.meter.fftSize = 4096; REC.mdata = new Float32Array(4096); REC.src.connect(REC.meter);
     await buildCapture();
   } catch (e) { REC.err = 'failed'; REC.errMsg = e.message; closeMic(); refreshRecPanel(); return false; }
   setMonitor(); listInputs(); refreshRecPanel();

@@ -10,9 +10,12 @@ const lmHz = f => f >= 1000 ? (f / 1000).toFixed(f % 1000 ? 1 : 0).replace('.0',
 BUILTIN_PLUGINS.push({ id: 'th.match-eq', type: 'effect', name: 'Match EQ', author: 'Tapehouse',
   description: 'The EQ curve Listen & Match fitted to your voice: a low cut plus eleven bands. Turn any band yourself afterwards.',
   params: [{ id: 'lowcut', label: 'Low cut', min: 30, max: 300, default: 80, curve: 'log', unit: 'Hz' },
-    ...LM_EQ.map((b, i) => ({ id: 'g' + i, label: lmHz(b.f), min: -12, max: 12, default: 0, unit: 'dB' }))],
+    ...LM_EQ.map((b, i) => ({ id: 'g' + i, label: lmHz(b.f), min: -12, max: 12, default: 0, unit: 'dB' })),
+    // output trim: lets an A/B comparison keep the same loudness instead of jumping when the cuts come off
+    { id: 'trim', label: 'Trim', min: -18, max: 6, default: 0, unit: 'dB' }],
   graph: [{ node: 'filter', filterType: 'highpass', frequency: '$lowcut', q: 0.71 },
-    ...LM_EQ.map((b, i) => ({ node: 'filter', filterType: b.type, frequency: b.f, q: b.q, gain: '$g' + i }))] });
+    ...LM_EQ.map((b, i) => ({ node: 'filter', filterType: b.type, frequency: b.f, q: b.q, gain: '$g' + i })),
+    { node: 'gain', gainDb: '$trim' }] });
 
 /* ---------- analysis ---------- */
 const LM_BANDS = (() => { const f = []; for (let k = -26; k <= 24; k++) { const fc = 1000 * Math.pow(2, k / 6); if (fc >= 50 && fc <= 16100) f.push(fc); } return f; })();
