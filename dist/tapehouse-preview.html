@@ -1140,7 +1140,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.5.1';
+const APP_VERSION = '2.6.0';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -2273,7 +2273,10 @@ class TuneCore {
   static latency(sr, live, voice) { return Math.ceil(TuneCore.grainHalf(sr, live, voice) * (1 + Math.pow(2, 3 / 12))) + 2; }
   constructor(sr, p) {
     this.sr = sr;
-    this.dec = sr > 32000 ? 2 : 1;
+    // The detector only needs the band below ~1 kHz, so it is decimated hard: a 12 kHz
+    // tracking path costs a quarter of what 24 kHz did, which buys the audio thread a much
+    // longer analysis window (needed to hear low notes properly).
+    this.dec = sr > 32000 ? 4 : 2;
     this.sr2 = sr / this.dec;
     this.mode = 'full';
     this.maxHalf = TuneCore.grainHalf(sr, false);  // longest grain half-width: two full periods down to 110 Hz
@@ -2286,12 +2289,16 @@ class TuneCore {
     this.b0 = (1 - cw) / 2 / a0; this.b1 = (1 - cw) / a0; this.a1 = -2 * cw / a0; this.a2 = (1 - al) / a0;
     this.x1 = 0; this.x2 = 0; this.y1 = 0; this.y2 = 0;
     this.DN = 4096; this.dbuf = new Float32Array(this.DN); this.dn = 0;
-    this.W = Math.round(this.sr2 * 0.02);
-    this.frame = new Float32Array(this.W + 1100); this.dfn = new Float32Array(1100);
+    this.frame = new Float32Array(4096); this.dfn = new Float32Array(1200);
     this.hop = 256; this.since = 0; this.acc = 0;
     // pitch state
     this.voiced = false; this.T = sr / 200; this.f0 = 0; this.lastM = 0; this.target = null;
     this.s = 0; this.held = 0; this.silent = 1; this.hist = []; this.ratio = 1;
+    // tracking state: last confident octave, how fast the pitch moves, a note waiting to
+    // be confirmed, and the vibrato the singer is actually producing
+    this.prevF = 0; this.prevM = 0; this.pending = null; this.pendingT = 0; this.sinceNew = 1;
+    this.clarity = 0; this.vibDepth = 0; this.slowM = 0; this.slowOn = false;
+    this.noteAvg = 0; this.avgOn = false; this.devs = []; this.phraseT = 0;
     this.uvT = Math.round(sr * 0.006); this.gx = 1; this.gv = false;
     this.msI = 0; this.msO = 0; this.gain = 1; this.agcA = 1 - Math.exp(-1 / (0.05 * sr));
     this.p = { retune: 20, humanize: 0.2, flex: 0, amount: 1, formant: 0, voice: 'tenor', mask: 0xFFF, live: false, fcorr: 1 };
@@ -2301,8 +2308,17 @@ class TuneCore {
     const oldMask = this.p.mask | 0;
     for (const k in p) if (k in this.p) this.p[k] = p[k];
     const v = this.p.voice;
-    this.fmin = v === 'soprano' ? 150 : v === 'low' ? 70 : 80;
-    this.fmax = v === 'soprano' ? 1100 : v === 'low' ? 520 : 900;
+    // The preset says where this voice lives; the tracker listens a little beyond it, so a
+    // note at the edge of the range still tunes instead of silently passing through, and
+    // scores the preset's own band higher so an octave error cannot win on clarity alone.
+    const preMin = v === 'soprano' ? 150 : v === 'low' ? 70 : 80;
+    const preMax = v === 'soprano' ? 1100 : v === 'low' ? 520 : 900;
+    this.preMin = preMin; this.preMax = preMax;
+    this.fmin = Math.max(55, preMin * 0.8);
+    this.fmax = Math.min(1400, preMax * 1.4);
+    const need = Math.ceil(this.sr2 / this.fmin); // samples per period at the lowest note
+    this.Wmax = Math.max(Math.round(this.sr2 * 0.016), Math.min(Math.round(need * 2.2), this.frame.length - need - 2));
+    this.Wmin = Math.round(this.sr2 * 0.012);
     this.fr = Math.pow(2, Math.max(-3, Math.min(3, +this.p.formant || 0)) / 12);
     if (!((this.p.mask | 0) & 0xFFF)) this.p.mask = 0xFFF;
     // A key/scale change must release a held target that is no longer in the scale.
@@ -2324,13 +2340,24 @@ class TuneCore {
     }
     return best;
   }
-  /* YIN pitch detection on the decimated, low-passed signal, then target note + retune smoothing. */
+  /* YIN-style pitch detection on the decimated, low-passed signal, then the note under the
+     voice and the retune smoothing. Three things keep this musical:
+       - the octave is chosen with continuity, so one weak frame cannot flip the phrase,
+       - a target is held until the singer has really moved, so a vibrato that leans over a
+         scale note does not re-tune to its neighbour on every wobble,
+       - a syllable change is followed at once, while a held note keeps its vibrato. */
   detect() {
     const hopSec = this.hop / this.sr, rms = Math.sqrt(this.acc / this.hop); this.acc = 0;
-    const W = this.W, sr2 = this.sr2, maxLag = Math.min(1000, Math.ceil(sr2 / this.fmin)), minLag = Math.max(2, Math.floor(sr2 / this.fmax));
+    // The window is ~2.4 periods of the note being sung: long enough to read a low note,
+    // short enough that a high note is not smeared across a syllable. A shorter window is
+    // also a shorter delay before a note change can be heard.
+    const sr2 = this.sr2, W = this.prevF > 0
+      ? Math.max(this.Wmin, Math.min(this.Wmax, Math.round(sr2 * 2.4 / this.prevF)))
+      : this.Wmax;
+    const maxLag = Math.min(1000, Math.ceil(sr2 / this.fmin)), minLag = Math.max(2, Math.floor(sr2 / this.fmax));
     const len = W + maxLag + 1;
-    let voiced = false, f0 = 0;
-    if (this.dn >= len && rms > 0.0025) {
+    let f0 = 0;
+    if (this.dn >= len && rms > 0.002) {
       const f = this.frame, D = this.DN - 1, st = this.dn - len;
       for (let i = 0; i < len; i++) f[i] = this.dbuf[(st + i) & D];
       const d = this.dfn; let run = 0; d[0] = 1;
@@ -2342,27 +2369,89 @@ class TuneCore {
       let bt = -1;
       for (let t = minLag; t < maxLag; t++) if (d[t] < 0.15) { while (t + 1 < maxLag && d[t + 1] < d[t]) t++; bt = t; break; }
       if (bt < 0) { let bv = 1; for (let t = minLag; t < maxLag; t++) if (d[t] < bv) { bv = d[t]; bt = t; } }
-      if (bt > minLag && bt < maxLag && d[bt] < (this.voiced ? 0.35 : 0.25)) {
-        let tt = bt; const a = d[bt - 1], b = d[bt], c = d[bt + 1], den = a - 2 * b + c;
-        if (den > 0) tt = bt + 0.5 * (a - c) / den;
-        f0 = sr2 / tt; voiced = f0 >= this.fmin * 0.95 && f0 <= this.fmax * 1.05;
+      if (bt > minLag && bt < maxLag) {
+        // Score the period and its octave neighbours: on a breathy or very low note the
+        // first dip can sit an octave away, and a wrong octave bends the whole phrase.
+        let bestQ = -1, bestF = 0;
+        for (const k of [1, 2, 0.5]) {
+          const t = Math.round(bt * k);
+          if (t <= minLag || t >= maxLag) continue;
+          const a = d[t - 1], b = d[t], c = d[t + 1], den = a - 2 * b + c;
+          const tt = den > 0 ? t + 0.5 * (a - c) / den : t;
+          const ff = sr2 / tt;
+          if (ff < this.fmin * 0.97 || ff > this.fmax * 1.03) continue;
+          let q = 1 - Math.min(1, b);
+          if (ff < this.preMin * 0.85 || ff > this.preMax * 1.15) q -= 0.06; // outside the chosen voice: less likely
+          if (this.prevF > 0 && Math.abs(Math.log2(ff / this.prevF)) < 0.18) q += 0.05; // stay on the octave we already had
+          if (q > bestQ) { bestQ = q; bestF = ff; }
+        }
+        if (bestQ >= (this.voiced ? 0.55 : 0.66)) { f0 = bestF; this.clarity = bestQ; } // clearly periodic, not breath
       }
     }
-    if (!voiced) {
-      this.silent += hopSec; this.voiced = false;
-      if (this.silent > 0.15) { this.s = 0; this.target = null; this.hist.length = 0; }
+    if (!(f0 > 0)) {
+      this.silent += hopSec; this.voiced = false; this.prevF = 0;
+      if (this.silent > 0.15) { this.s = 0; this.target = null; this.hist.length = 0; this.prevM = 0; this.pending = null; this.pendingT = 0; this.vibDepth = 0; this.slowOn = false; this.avgOn = false; this.devs.length = 0; this.phraseT = 0; }
       return;
     }
+    this.silent = 0; this.prevF = f0;
     let m = 69 + 12 * Math.log2(f0 / 440);
     const h = this.hist; h.push(m); if (h.length > 3) h.shift();
-    const med = h.length === 3 ? Math.max(Math.min(h[0], h[1]), Math.min(Math.max(h[0], h[1]), h[2])) : m;
+    let med = h.length === 3 ? Math.max(Math.min(h[0], h[1]), Math.min(Math.max(h[0], h[1]), h[2])) : m;
+    // A median of three throws away a lone spike, but it also drags every real note change
+    // one frame behind. When the two newest frames agree on a different note, that is a
+    // change, not a spike: follow it at once instead of waiting for the third frame.
+    if (h.length === 3 && Math.abs(h[1] - h[2]) < 0.15 && Math.abs(h[2] - med) > 0.4) med = (h[1] + h[2]) * 0.5;
     if (Math.abs(m - med) > 1) { m = med; f0 = 440 * Math.pow(2, (m - 69) / 12); } // one-frame octave slips
-    const cand = this.snap(med);
-    if (this.target == null) { this.target = cand; this.held = 0; }
-    else if (cand !== this.target) {
-      const dc = Math.abs(med - cand), dt = Math.abs(med - this.target);
-      if (dc + 0.15 < dt || dt > 0.9) { this.target = cand; this.held = 0; }
+    const step = this.prevM ? Math.abs(m - this.prevM) : 0; // how fast the sung pitch is moving
+    this.prevM = m;
+    // Vibrato: the sung pitch swinging around the note it is on. The test is crossings, not
+    // size - the pitch has to come back past its own average, again and again. A note change
+    // moves one way and stays, so it never crosses back however far it travels.
+    if (!this.avgOn) { this.noteAvg = med; this.avgOn = true; } else this.noteAvg += (med - this.noteAvg) * (1 - Math.exp(-hopSec / 0.25));
+    const D = this.devs; D.push(med - this.noteAvg); if (D.length > 76) D.shift(); // ~400 ms: a slow vibrato needs a full swing
+    let cross = 0, prevSide = 0, lo = 1e9, hi = -1e9;
+    for (let i = 0; i < D.length; i++) {
+      const x = D[i]; if (x < lo) lo = x; if (x > hi) hi = x;
+      const side = x > 0.06 ? 1 : x < -0.06 ? -1 : 0;
+      if (side) { if (prevSide && side !== prevSide) cross++; prevSide = side; }
     }
+    const spread = hi - lo;
+    const depth = D.length >= 24 && spread > 0.15 && cross >= 1 ? Math.min(1, (spread - 0.15) / 0.5) : 0;
+    if (depth > this.vibDepth) this.vibDepth += (depth - this.vibDepth) * 0.5;    // a wobble is seen at once
+    else if (spread > 0.35 && cross === 0) this.vibDepth *= 0.3;                   // a one-way move is not a wobble
+    else this.vibDepth = Math.max(0, this.vibDepth - hopSec / 0.6);                // and patience lets go slowly
+    const wobble = this.vibDepth;
+    // The note is what the singer holds, not what one frame of vibrato says: a slow
+    // average of the pitch is the second opinion every note change has to win over.
+    // On a wobbling note it averages longer, so a vibrato cannot drag the note with it.
+    // At the start of a phrase the wobble is not known yet (it takes a swing to see one), so
+    // the first moments are extra patient: a wide vibrato must not pick its neighbour note.
+    this.phraseT += hopSec;
+    const grace = Math.min(1, this.phraseT / 0.3);
+    const slowTau = 0.045 + 0.25 * wobble + 0.06 * (1 - grace);
+    if (this.slowOn) this.slowM += (med - this.slowM) * (1 - Math.exp(-hopSec / slowTau)); else { this.slowM = med; this.slowOn = true; }
+    const cand = this.snap(med);
+    let onset = false;
+    if (this.target == null) { this.target = cand; this.held = 0; this.pending = null; this.pendingT = 0; onset = true; }
+    else if (cand === this.target) { this.pending = null; this.pendingT = 0; }
+    else {
+      const dc = Math.abs(med - cand), dt = Math.abs(med - this.target);
+      const dcS = Math.abs(this.slowM - cand), dtS = Math.abs(this.slowM - this.target);
+      // One noisy frame must not wipe the count: a real move keeps its own momentum, and
+      // a vibrato flicker only ever dips in for a frame or two.
+      if (cand !== this.pending) { this.pendingT = Math.max(0, this.pendingT - hopSec * 0.75); this.pending = cand; }
+      this.pendingT += hopSec;
+      // A jump is an articulation and is followed at once. A slide, or a vibrato leaning
+      // over the next note, has to convince the average as well before the note moves.
+      const decisive = dc + 0.18 < dt, settled = dcS + 0.08 + 0.34 * wobble + 0.25 * (1 - grace) < dtS;
+      // A steady note can be trusted frame by frame. While the singer is wobbling - or while
+      // the phrase is too young to know whether they are - the slow average has the final say.
+      const patient = wobble >= 0.2 || grace < 1;
+      if (dt > 2.4 || (step > 0.75 ? decisive : this.pendingT >= 0.011 && decisive && (!patient || settled))) {
+        this.target = cand; this.held = 0; this.pending = null; this.pendingT = 0; onset = true;
+      }
+    }
+    if (onset) { this.sinceNew = 0; this.vibDepth *= 0.6; } else this.sinceNew += hopSec; // the wobble history survives a note change
     this.held += hopSec;
     const p = this.p;
     let corr = Math.max(-3, Math.min(3, this.target - m));
@@ -2372,11 +2461,15 @@ class TuneCore {
     }
     // Retune works like Auto-Tune's: milliseconds, 0 = instant (hard tune), 10–50 = natural with more vibrato coming through as it rises
     let tau = Math.max(0, +p.retune || 0) / 1000;
-    if (p.humanize > 0) tau += p.humanize * 0.15 * Math.min(1, Math.max(0, (this.held - 0.12) / 0.35)); // Humanize slows it on sustained notes only
+    if (tau > 0 && this.sinceNew < 0.05) tau = Math.min(tau, 0.012); // land on a new note quickly, then settle into it
+    if (p.humanize > 0) { // Humanize keeps a held note living: it slows down and lets a real vibrato through
+      const sustain = Math.min(1, Math.max(0, (this.held - 0.12) / 0.35));
+      tau += p.humanize * (0.15 + 0.4 * this.vibDepth) * sustain;
+    }
     const a = tau < 0.0005 ? 1 : 1 - Math.exp(-hopSec / tau);
     this.s += (corr - this.s) * a;
     this.ratio = Math.pow(2, this.s * Math.max(0, Math.min(1, +p.amount)) / 12);
-    this.T = this.sr / f0; this.f0 = f0; this.lastM = m; this.voiced = true; this.silent = 0;
+    this.T = this.sr / f0; this.f0 = f0; this.lastM = m; this.voiced = true;
   }
   /* One pitch-synchronous grain (TD-PSOLA): formants stay put, only the pitch moves. */
   grain() {
@@ -2428,7 +2521,7 @@ class TuneCore {
     this.gain = g + (tg - g) * (1 - Math.exp(-len / (0.06 * this.sr)));
     this.eDone = eEnd;
   }
-  report() { return { v: this.voiced ? 1 : 0, m: this.lastM, t: this.target, s: this.s * this.p.amount }; }
+  report() { return { v: this.voiced ? 1 : 0, m: this.lastM, t: this.target, s: this.s * this.p.amount, q: this.clarity }; }
 }
 class DeEssCore {
   constructor(sr, p) { this.sr = sr; this.zl = [0, 0, 0, 0]; this.zr = [0, 0, 0, 0]; this.env = 0; this.gr = 1; this.p = { freq: 6500, thresh: -28, range: 8 }; this.set(p || {}); }
@@ -2877,7 +2970,7 @@ PRIMS.pingpong = E => {
 
 const DELAY_TIMES = [{ label: '1/16', value: 0.25 }, { label: '1/8', value: 0.5 }, { label: '1/8 dotted', value: 0.75 }, { label: '1/4', value: 1 }, { label: '1/4 dotted', value: 1.5 }, { label: '1/2', value: 2 }];
 BUILTIN_PLUGINS.push(
-  { id: 'th.autotune', type: 'effect', name: 'Tune', author: 'Tapehouse', description: 'Pitch correction that snaps the voice to the song key. Retune 0–5 is the hard robotic sound, 10–15 the modern R&B sound, 20+ natural.',
+  { id: 'th.autotune', type: 'effect', name: 'Tune', author: 'Tapehouse', description: 'Pitch correction that snaps the voice to the song key. Retune 0–5 is the hard robotic sound, 10–15 the modern R&B sound, 20+ natural. It listens a little beyond the chosen voice type so notes at the edge of your range still tune, holds one note through a vibrato instead of hopping to its neighbour, and follows a real note change within a few frames.',
     params: [
       { id: 'retune', label: 'Retune', min: 0, max: 100, default: 20, step: 1, unit: 'ms' },
       { id: 'humanize', label: 'Humanize', min: 0, max: 1, default: 0.2, unit: '%' },

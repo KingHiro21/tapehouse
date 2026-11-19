@@ -68,48 +68,83 @@ for (const p of plugins.BUILTIN_PLUGINS) {
     bad++;
   }
 }
-/* Regression: changing the song scale while singing must release a held note
-   that the new scale excludes, then correct the signal to an allowed note. */
+/* Tune regressions. These run the real TuneCore on generated voices, so a change to the
+   tracker that makes it drift, flicker between notes, or stop hearing part of the range
+   fails the build instead of shipping. */
 try {
   const TuneCore = plugins.TuneCore;
   const verify = (label, ok, detail) => { if (!ok) throw new Error(`${label}: ${detail}`); console.log(`  ok    ${label}`); };
+  const SR = 48000;
   const mask = notes => notes.reduce((bits, note) => bits | (1 << note), 0);
-  const core = new TuneCore(48000, { voice: 'soprano', mask: mask([0, 2, 4, 5, 7, 9, 11]), retune: 0, humanize: 0, flex: 0, amount: 1 });
-  const input = new Float32Array(128), output = new Float32Array(128);
-  const b4 = 493.883;
-  const sing = frames => {
-    for (let start = 0; start < frames; start += input.length) {
+  const MAJOR = mask([0, 2, 4, 5, 7, 9, 11]);
+  const midiOf = hz => Math.round(69 + 12 * Math.log2(hz / 440));
+  const base = { voice: 'tenor', mask: MAJOR, retune: 20, humanize: 0.2, flex: 0, amount: 1, formant: 0, fcorr: 1 };
+
+  /* Sing a generated voice through the core; report the note changes it made. */
+  const sing = (seconds, pitchAt, params, continueOn) => {
+    const core = continueOn || new TuneCore(SR, { ...base, ...params });
+    const input = new Float32Array(128), output = new Float32Array(128);
+    const changes = []; let last = null, phase = 0;
+    const frames = Math.ceil((seconds * SR) / input.length);
+    const heard = new Float32Array(frames * input.length);
+    for (let f = 0; f < frames; f++) {
       for (let i = 0; i < input.length; i++) {
-        const t = (core.n + i) / 48000;
-        input[i] = 0.25 * (Math.sin(2 * Math.PI * b4 * t) + 0.35 * Math.sin(4 * Math.PI * b4 * t) + 0.12 * Math.sin(6 * Math.PI * b4 * t));
+        const t = (f * input.length + i) / SR;
+        phase += (2 * Math.PI * pitchAt(t)) / SR;
+        input[i] = 0.18 * (Math.sin(phase) + 0.5 * Math.sin(2 * phase) + 0.25 * Math.sin(3 * phase));
       }
       core.process(input, output, input.length);
+      heard.set(output, f * input.length);
+      if (core.target !== last) { if (last !== null) changes.push({ t: (f * input.length) / SR, note: core.target }); last = core.target; }
     }
+    return { core, changes, output: heard };
   };
-  sing(48000);
-  verify('Tune detects the sustained B4 before a key change', core.report().v && core.report().t === 71, JSON.stringify(core.report()));
-  core.set({ mask: mask([0, 2, 4, 5, 7, 9, 10]) }); // C major -> F major excludes B; next allowed note is C.
-  verify('Tune releases a held target excluded by the new scale', core.report().t == null, JSON.stringify(core.report()));
-  sing(48000);
-  const rep = core.report();
-  const samples = new Float32Array(9600);
-  for (let start = 0; start < samples.length; start += input.length) {
-    for (let i = 0; i < input.length; i++) {
-      const t = (core.n + i) / 48000;
-      input[i] = 0.25 * (Math.sin(2 * Math.PI * b4 * t) + 0.35 * Math.sin(4 * Math.PI * b4 * t) + 0.12 * Math.sin(6 * Math.PI * b4 * t));
-    }
-    core.process(input, output, input.length);
-    samples.set(output, start);
+
+  /* 1. a key change releases a held note the new scale excludes, then retunes to an allowed one */
+  {
+    const b4 = 493.883;
+    const first = sing(1, () => b4, { voice: 'soprano', retune: 0, humanize: 0 });
+    verify('Tune hears a sustained B4', first.core.report().v === 1 && first.core.report().t === 71, JSON.stringify(first.core.report()));
+    first.core.set({ mask: mask([0, 2, 4, 5, 7, 9, 10]) }); // C major -> F major: B is out, C is next
+    verify('a new key releases the held note', first.core.report().t == null, JSON.stringify(first.core.report()));
+    const rest = sing(1, () => b4, { voice: 'soprano', retune: 0, humanize: 0 }, first.core);
+    const samples = rest.output.subarray(rest.output.length - 9600);
+    const amp = hz => {
+      let re = 0, im = 0;
+      for (let i = 0; i < samples.length; i++) { const phase = (2 * Math.PI * hz * i) / SR; re += samples[i] * Math.cos(phase); im -= samples[i] * Math.sin(phase); }
+      return (2 * Math.hypot(re, im)) / samples.length;
+    };
+    verify('and retunes the note into the new key', rest.core.report().t === 72 && amp(523.251) > amp(b4) * 4,
+      `target ${rest.core.report().t}, B4 ${amp(b4).toFixed(4)}, C5 ${amp(523.251).toFixed(4)}`);
   }
-  const amplitude = hz => {
-    let re = 0, im = 0;
-    for (let i = 0; i < samples.length; i++) { const phase = 2 * Math.PI * hz * i / 48000; re += samples[i] * Math.cos(phase); im -= samples[i] * Math.sin(phase); }
-    return 2 * Math.hypot(re, im) / samples.length;
-  };
-  verify('Tune corrects the sustained note to the new scale', rep.t === 72 && amplitude(523.251) > amplitude(b4) * 4, `report ${JSON.stringify(rep)}, B4 ${amplitude(b4).toFixed(4)}, C5 ${amplitude(523.251).toFixed(4)}`);
+
+  /* 2. a note below the chosen voice type still tunes (the presets are a preference, not a gate) */
+  {
+    const low = sing(1.4, () => 68, {}); // 68 Hz with the Tenor preset, nearest scale note is C2 65.41
+    verify('a note below the voice preset still tunes', low.core.report().v === 1 && low.core.report().t === midiOf(65.41),
+      JSON.stringify(low.core.report()));
+    const high = sing(1.4, () => 1046.5, { voice: 'soprano' });
+    verify('a note above the voice preset still tunes', high.core.report().v === 1 && high.core.report().t === midiOf(1046.5),
+      JSON.stringify(high.core.report()));
+  }
+
+  /* 3. a wide vibrato sitting on a note boundary must not re-tune to the neighbour note */
+  {
+    const straddle = sing(2, t => 207.65 * Math.pow(2, (60 * Math.sin(2 * Math.PI * 4.5 * t)) / 1200), { retune: 0, humanize: 0 });
+    verify('a vibrato over a note boundary holds one note', straddle.changes.length === 0,
+      `${straddle.changes.length} changes: ${straddle.changes.map(c => c.note).join(',')}`);
+  }
+
+  /* 4. a real note change is still followed, and quickly */
+  {
+    const jump = sing(1.4, t => (t < 0.6 ? 261.63 : 293.66), { humanize: 0.1 });
+    const change = jump.changes.find(c => c.note === midiOf(293.66));
+    verify('a note change is followed within 120 ms', !!change && change.t < 0.72, JSON.stringify(jump.changes));
+    verify('and the new note is the right one', jump.core.report().t === midiOf(293.66), JSON.stringify(jump.core.report()));
+  }
 } catch (e) {
   console.error(`check-plugins: Tune regression test failed: ${e.message}`);
   bad++;
 }
 if (bad) process.exit(1);
-console.log(`plugins ok (${plugins.BUILTIN_PLUGINS.length} built-in manifests validate; Tune key-change regression passes)`);
+console.log(`plugins ok (${plugins.BUILTIN_PLUGINS.length} built-in manifests validate; Tune regressions pass)`);
