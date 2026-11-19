@@ -47,7 +47,7 @@ sandbox.self = sandbox;
 let plugins;
 try {
   const ctx = vm.createContext(sandbox);
-  vm.runInContext(src + '\n;globalThis.__out = { BUILTIN_PLUGINS, validatePlugin };', ctx, { timeout: 30000 });
+  vm.runInContext(src + '\n;globalThis.__out = { BUILTIN_PLUGINS, validatePlugin, TuneCore };', ctx, { timeout: 30000 });
   plugins = sandbox.__out;
 } catch (e) {
   console.error('check-plugins: the app script failed to load: ' + e.message);
@@ -68,5 +68,48 @@ for (const p of plugins.BUILTIN_PLUGINS) {
     bad++;
   }
 }
+/* Regression: changing the song scale while singing must release a held note
+   that the new scale excludes, then correct the signal to an allowed note. */
+try {
+  const TuneCore = plugins.TuneCore;
+  const verify = (label, ok, detail) => { if (!ok) throw new Error(`${label}: ${detail}`); console.log(`  ok    ${label}`); };
+  const mask = notes => notes.reduce((bits, note) => bits | (1 << note), 0);
+  const core = new TuneCore(48000, { voice: 'soprano', mask: mask([0, 2, 4, 5, 7, 9, 11]), retune: 0, humanize: 0, flex: 0, amount: 1 });
+  const input = new Float32Array(128), output = new Float32Array(128);
+  const b4 = 493.883;
+  const sing = frames => {
+    for (let start = 0; start < frames; start += input.length) {
+      for (let i = 0; i < input.length; i++) {
+        const t = (core.n + i) / 48000;
+        input[i] = 0.25 * (Math.sin(2 * Math.PI * b4 * t) + 0.35 * Math.sin(4 * Math.PI * b4 * t) + 0.12 * Math.sin(6 * Math.PI * b4 * t));
+      }
+      core.process(input, output, input.length);
+    }
+  };
+  sing(48000);
+  verify('Tune detects the sustained B4 before a key change', core.report().v && core.report().t === 71, JSON.stringify(core.report()));
+  core.set({ mask: mask([0, 2, 4, 5, 7, 9, 10]) }); // C major -> F major excludes B; next allowed note is C.
+  verify('Tune releases a held target excluded by the new scale', core.report().t == null, JSON.stringify(core.report()));
+  sing(48000);
+  const rep = core.report();
+  const samples = new Float32Array(9600);
+  for (let start = 0; start < samples.length; start += input.length) {
+    for (let i = 0; i < input.length; i++) {
+      const t = (core.n + i) / 48000;
+      input[i] = 0.25 * (Math.sin(2 * Math.PI * b4 * t) + 0.35 * Math.sin(4 * Math.PI * b4 * t) + 0.12 * Math.sin(6 * Math.PI * b4 * t));
+    }
+    core.process(input, output, input.length);
+    samples.set(output, start);
+  }
+  const amplitude = hz => {
+    let re = 0, im = 0;
+    for (let i = 0; i < samples.length; i++) { const phase = 2 * Math.PI * hz * i / 48000; re += samples[i] * Math.cos(phase); im -= samples[i] * Math.sin(phase); }
+    return 2 * Math.hypot(re, im) / samples.length;
+  };
+  verify('Tune corrects the sustained note to the new scale', rep.t === 72 && amplitude(523.251) > amplitude(b4) * 4, `report ${JSON.stringify(rep)}, B4 ${amplitude(b4).toFixed(4)}, C5 ${amplitude(523.251).toFixed(4)}`);
+} catch (e) {
+  console.error(`check-plugins: Tune regression test failed: ${e.message}`);
+  bad++;
+}
 if (bad) process.exit(1);
-console.log(`plugins ok (${plugins.BUILTIN_PLUGINS.length} built-in manifests validate)`);
+console.log(`plugins ok (${plugins.BUILTIN_PLUGINS.length} built-in manifests validate; Tune key-change regression passes)`);

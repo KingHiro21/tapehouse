@@ -32,12 +32,18 @@ class TuneCore {
     this.set(p || {});
   }
   set(p) {
+    const oldMask = this.p.mask | 0;
     for (const k in p) if (k in this.p) this.p[k] = p[k];
     const v = this.p.voice;
     this.fmin = v === 'soprano' ? 150 : v === 'low' ? 70 : 80;
     this.fmax = v === 'soprano' ? 1100 : v === 'low' ? 520 : 900;
     this.fr = Math.pow(2, Math.max(-3, Math.min(3, +this.p.formant || 0)) / 12);
     if (!((this.p.mask | 0) & 0xFFF)) this.p.mask = 0xFFF;
+    // A key/scale change must release a held target that is no longer in the scale.
+    // Otherwise the hysteresis below can keep snapping to a forbidden note indefinitely.
+    if (oldMask !== (this.p.mask | 0) && this.target != null && !((this.p.mask >> (((this.target % 12) + 12) % 12)) & 1)) {
+      this.target = null; this.held = 0;
+    }
     const live = !!this.p.live, mode = live ? 'live-' + v : 'full';
     if (mode !== this.mode) { // switch grain size: restart synthesis cleanly at the new look-ahead
       this.mode = mode; this.maxHalf = TuneCore.grainHalf(this.sr, live, v); this.L = TuneCore.latency(this.sr, live, v);
