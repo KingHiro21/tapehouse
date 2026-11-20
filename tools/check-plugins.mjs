@@ -47,7 +47,7 @@ sandbox.self = sandbox;
 let plugins;
 try {
   const ctx = vm.createContext(sandbox);
-  vm.runInContext(src + '\n;globalThis.__out = { BUILTIN_PLUGINS, validatePlugin, TuneCore };', ctx, { timeout: 30000 });
+  vm.runInContext(src + '\n;globalThis.__out = { BUILTIN_PLUGINS, validatePlugin, TuneCore, detectPitch };', ctx, { timeout: 30000 });
   plugins = sandbox.__out;
 } catch (e) {
   console.error('check-plugins: the app script failed to load: ' + e.message);
@@ -141,6 +141,21 @@ try {
     const change = jump.changes.find(c => c.note === midiOf(293.66));
     verify('a note change is followed within 120 ms', !!change && change.t < 0.72, JSON.stringify(jump.changes));
     verify('and the new note is the right one', jump.core.report().t === midiOf(293.66), JSON.stringify(jump.core.report()));
+  }
+  /* 5. the tuner reads a real pitch accurately - the readout was once 87 cents sharp */
+  {
+    const readings = [];
+    for (const hz of [55, 82.41, 110, 146.83, 220, 261.63, 329.63, 440, 523.25, 880, 1046.5]) {
+      const samples = new Float32Array(2048);
+      for (let i = 0; i < samples.length; i++) {
+        const t = i / SR;
+        samples[i] = 0.2 * (Math.sin(2 * Math.PI * hz * t) + 0.4 * Math.sin(4 * Math.PI * hz * t) + 0.2 * Math.sin(6 * Math.PI * hz * t));
+      }
+      const r = plugins.detectPitch(samples, SR);
+      readings.push({ hz, cents: r ? 1200 * Math.log2(r.f / hz) : null });
+    }
+    const wrong = readings.filter(r => r.cents == null || Math.abs(r.cents) > 3);
+    verify('the tuner reads every note within 3 cents', wrong.length === 0, wrong.map(r => `${r.hz}Hz ${r.cents == null ? 'no note' : r.cents.toFixed(1) + 'ct'}`).join(', '));
   }
 } catch (e) {
   console.error(`check-plugins: Tune regression test failed: ${e.message}`);
