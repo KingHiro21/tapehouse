@@ -7,7 +7,7 @@
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.7.0';
+const APP_VERSION = '2.7.1';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -624,6 +624,7 @@ class Engine {
     this.at = null; this.atHard = false; this.resetting = false; this.autoLast = new Map(); this.autoKeys = null; this.skipClips = null;
     this.master = null; this.refSrc = null;
     this.dsp = null; this.dspP = null; this.keySig = ''; this.lowLat = false; this.onBuild = null; // vocal DSP worklet: null | 'loading' | 'ready' | 'failed'
+    this.monIns = -1; // the insert the live mic is being heard through, if any (see setMonitor)
   }
   /* Loads the Tune / De-esser worklet once per context. Until it is ready those effects run on a main-thread fallback. */
   loadDsp() {
@@ -765,8 +766,13 @@ class Engine {
       const ins = this.inserts[i], ak = this.autoKeys;
       if (!(ak && ak.has('mix:' + i + ':vol'))) this.ramp(ins.vol.gain, m.vol);
       this.ramp(ins.input.gain, Math.pow(10, (+m.trim || 0) / 20)); // input trim, before the effects
-      if (!(ak && ak.has('mix:' + i + ':pan'))) this.ramp(ins.pan.pan, m.pan);
-      this.ramp(ins.out.gain, (m.mute || (anySolo && i > 0 && !m.solo)) ? 0 : 1, 0.008);
+      /* The insert the live mic is being heard back through. Mute, solo and pan describe the mix, not the voice you
+         are listening to while you sing: muting the vocal to work on the beat, or soloing the drums, used to silence
+         "Hear myself" with nothing on screen to explain it, and a panned vocal put your own voice in one ear. The
+         fader still sets how loud you hear yourself, which is the strip's other job. */
+      const live = this.monIns === i;
+      if (!(ak && ak.has('mix:' + i + ':pan'))) this.ramp(ins.pan.pan, live ? 0 : m.pan);
+      this.ramp(ins.out.gain, live || !(m.mute || (anySolo && i > 0 && !m.solo)) ? 1 : 0, 0.008);
       const sig = m.fx.map(f => f.id + ':' + f.plugin + ':' + (f.bypass ? 1 : 0)).join('|') + '#' + this.loaded.size;
       if (sig !== ins.sig) this.rebuildFx(i, sig);
     });

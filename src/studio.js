@@ -264,25 +264,35 @@ function closeMic() {
   if (REC.node && REC.node.port) REC.node.port.onmessage = null;
   disc(REC.src, REC.node, REC.sink, REC.meter, REC.mon);
   Object.assign(REC, { stream: null, src: null, node: null, sink: null, meter: null, mon: null, mode: null, level: 0 });
-  if (engine) engine.setLowLatency(false);
+  if (engine) { if (engine.monIns !== -1) { engine.monIns = -1; engine.sync(); } engine.setLowLatency(false); }
 }
 /* "Hear myself": the mic runs through the armed track's effects (Tune and the rest) straight to the speakers/headphones,
-   whether or not anything is playing or recording. */
+   whether or not anything is playing or recording. The insert is marked live so the engine keeps it audible and centred
+   whatever the mix is doing (see sync): pressing this and hearing nothing is the one thing it must never do. */
 function setMonitor() {
   if (REC.mon) { disc(REC.mon); REC.mon = null; }
   if (!engine) return;
   engine.onBuild = setMonitor;
   const tr = REC.armed != null && project.playlist.tracks[REC.armed];
-  if (ui.rec.monitor && REC.src && tr) {
+  const on = !!(ui.rec.monitor && REC.src && tr);
+  const ins = on ? clamp(tr.insert | 0, 0, engine.inserts.length - 1) : -1;
+  if (engine.monIns !== ins) { engine.monIns = ins; engine.sync(); }
+  if (on) {
     REC.mon = ctx.createGain(); REC.src.connect(REC.mon);
-    REC.mon.connect(engine.inserts[clamp(tr.insert | 0, 0, engine.inserts.length - 1)].input);
+    REC.mon.connect(engine.inserts[ins].input);
   }
-  engine.setLowLatency(!!REC.mon);
+  engine.setLowLatency(on);
 }
 function headphonesTip() { toast('Wear headphones. Through speakers the mic hears itself and howls.', { ms: 5000 }); }
 function setHearMyself(on) {
   ui.rec.monitor = !!on; saveRecPrefs(); setMonitor(); renderTransport(); refreshRecPanel();
-  if (on) headphonesTip();
+  if (!on) return;
+  /* Mute keeps the take out of the mix but not out of your ears, which is the point of monitoring - so say so
+     rather than leaving someone wondering why the strip looks muted and they can still hear themselves. */
+  const tr = REC.armed != null && project.playlist.tracks[REC.armed];
+  const m = tr && project.mixer[tr.insert | 0];
+  if (m && m.mute) toast('Your vocal is muted, so the take stays out of the mix — you will still hear yourself here.', { ms: 5200 });
+  else headphonesTip();
 }
 function setInsertBypass(ins, off) { mutate(P => { P.mixer[ins].fx.forEach(f => { f.bypass = off; }); }); }
 function lastTunedChain() { try { const v = localStorage.getItem('th.chain'); if (CHAINS[v] && CHAINS[v].artist) return v; } catch (e) { /* ok */ } return 'breezy'; }

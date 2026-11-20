@@ -1176,7 +1176,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.7.0';
+const APP_VERSION = '2.7.1';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -1793,6 +1793,7 @@ class Engine {
     this.at = null; this.atHard = false; this.resetting = false; this.autoLast = new Map(); this.autoKeys = null; this.skipClips = null;
     this.master = null; this.refSrc = null;
     this.dsp = null; this.dspP = null; this.keySig = ''; this.lowLat = false; this.onBuild = null; // vocal DSP worklet: null | 'loading' | 'ready' | 'failed'
+    this.monIns = -1; // the insert the live mic is being heard through, if any (see setMonitor)
   }
   /* Loads the Tune / De-esser worklet once per context. Until it is ready those effects run on a main-thread fallback. */
   loadDsp() {
@@ -1934,8 +1935,13 @@ class Engine {
       const ins = this.inserts[i], ak = this.autoKeys;
       if (!(ak && ak.has('mix:' + i + ':vol'))) this.ramp(ins.vol.gain, m.vol);
       this.ramp(ins.input.gain, Math.pow(10, (+m.trim || 0) / 20)); // input trim, before the effects
-      if (!(ak && ak.has('mix:' + i + ':pan'))) this.ramp(ins.pan.pan, m.pan);
-      this.ramp(ins.out.gain, (m.mute || (anySolo && i > 0 && !m.solo)) ? 0 : 1, 0.008);
+      /* The insert the live mic is being heard back through. Mute, solo and pan describe the mix, not the voice you
+         are listening to while you sing: muting the vocal to work on the beat, or soloing the drums, used to silence
+         "Hear myself" with nothing on screen to explain it, and a panned vocal put your own voice in one ear. The
+         fader still sets how loud you hear yourself, which is the strip's other job. */
+      const live = this.monIns === i;
+      if (!(ak && ak.has('mix:' + i + ':pan'))) this.ramp(ins.pan.pan, live ? 0 : m.pan);
+      this.ramp(ins.out.gain, live || !(m.mute || (anySolo && i > 0 && !m.solo)) ? 1 : 0, 0.008);
       const sig = m.fx.map(f => f.id + ':' + f.plugin + ':' + (f.bypass ? 1 : 0)).join('|') + '#' + this.loaded.size;
       if (sig !== ins.sig) this.rebuildFx(i, sig);
     });
@@ -6064,25 +6070,35 @@ function closeMic() {
   if (REC.node && REC.node.port) REC.node.port.onmessage = null;
   disc(REC.src, REC.node, REC.sink, REC.meter, REC.mon);
   Object.assign(REC, { stream: null, src: null, node: null, sink: null, meter: null, mon: null, mode: null, level: 0 });
-  if (engine) engine.setLowLatency(false);
+  if (engine) { if (engine.monIns !== -1) { engine.monIns = -1; engine.sync(); } engine.setLowLatency(false); }
 }
 /* "Hear myself": the mic runs through the armed track's effects (Tune and the rest) straight to the speakers/headphones,
-   whether or not anything is playing or recording. */
+   whether or not anything is playing or recording. The insert is marked live so the engine keeps it audible and centred
+   whatever the mix is doing (see sync): pressing this and hearing nothing is the one thing it must never do. */
 function setMonitor() {
   if (REC.mon) { disc(REC.mon); REC.mon = null; }
   if (!engine) return;
   engine.onBuild = setMonitor;
   const tr = REC.armed != null && project.playlist.tracks[REC.armed];
-  if (ui.rec.monitor && REC.src && tr) {
+  const on = !!(ui.rec.monitor && REC.src && tr);
+  const ins = on ? clamp(tr.insert | 0, 0, engine.inserts.length - 1) : -1;
+  if (engine.monIns !== ins) { engine.monIns = ins; engine.sync(); }
+  if (on) {
     REC.mon = ctx.createGain(); REC.src.connect(REC.mon);
-    REC.mon.connect(engine.inserts[clamp(tr.insert | 0, 0, engine.inserts.length - 1)].input);
+    REC.mon.connect(engine.inserts[ins].input);
   }
-  engine.setLowLatency(!!REC.mon);
+  engine.setLowLatency(on);
 }
 function headphonesTip() { toast('Wear headphones. Through speakers the mic hears itself and howls.', { ms: 5000 }); }
 function setHearMyself(on) {
   ui.rec.monitor = !!on; saveRecPrefs(); setMonitor(); renderTransport(); refreshRecPanel();
-  if (on) headphonesTip();
+  if (!on) return;
+  /* Mute keeps the take out of the mix but not out of your ears, which is the point of monitoring - so say so
+     rather than leaving someone wondering why the strip looks muted and they can still hear themselves. */
+  const tr = REC.armed != null && project.playlist.tracks[REC.armed];
+  const m = tr && project.mixer[tr.insert | 0];
+  if (m && m.mute) toast('Your vocal is muted, so the take stays out of the mix — you will still hear yourself here.', { ms: 5200 });
+  else headphonesTip();
 }
 function setInsertBypass(ins, off) { mutate(P => { P.mixer[ins].fx.forEach(f => { f.bypass = off; }); }); }
 function lastTunedChain() { try { const v = localStorage.getItem('th.chain'); if (CHAINS[v] && CHAINS[v].artist) return v; } catch (e) { /* ok */ } return 'breezy'; }

@@ -460,6 +460,38 @@ await step('Tune runs on the audio thread with the song key', async () => {
   expect(info.latency >= 0 && info.latency < 60, `the chain reports ${info.latency} ms`);
 });
 
+/* --- monitoring: the mix must not silence the voice you are hearing back --- */
+await step('the mix cannot silence or pan the live voice', async () => {
+  /* "Hear myself" used to run through the track's mute, solo and pan, so muting the vocal (or soloing the drums)
+     killed it with nothing on screen to explain why. The engine now holds the monitored insert audible and centred;
+     the fader still sets the level. */
+  const prep = await page.eval(`(() => {
+    const ins = ui.vsIns, E = engine;
+    const other = project.mixer.findIndex((m, i) => i > 0 && i !== ins);
+    if (!E || ins == null || other < 0) return { err: 'no engine or second track' };
+    globalThis.__mon = { ins, other, mute: project.mixer[ins].mute, pan: project.mixer[ins].pan, mon: E.monIns };
+    E.monIns = ins;
+    project.mixer[ins].mute = true; project.mixer[other].solo = true; project.mixer[ins].pan = -1;
+    E.sync();
+    return { ok: true };
+  })()`);
+  expect(!prep.err, prep.err || 'setup failed');
+  await sleep(400);
+  const live = await page.eval(`(() => { const { ins } = globalThis.__mon, E = engine, e = E.inserts[ins]; return { gain: +e.out.gain.value.toFixed(3), pan: +e.pan.pan.value.toFixed(3) }; })()`);
+  expect(live.gain > 0.95, `muting or soloing dropped the monitor to ${live.gain}`);
+  expect(Math.abs(live.pan) < 0.02, `the live voice sat at pan ${live.pan}`);
+  await page.eval(`(() => { const { ins, other, mute, pan, mon } = globalThis.__mon; project.mixer[ins].mute = mute; project.mixer[other].solo = false; project.mixer[ins].pan = pan; engine.monIns = mon; engine.sync(); })()`);
+  await sleep(400);
+  const off = await page.eval(`(() => { const { ins } = globalThis.__mon, E = engine, e = E.inserts[ins]; return { gain: +e.out.gain.value.toFixed(3), pan: +e.pan.pan.value.toFixed(3) }; })()`);
+  expect(off.gain > 0.95, `the mixer stopped working after monitoring (gain ${off.gain})`);
+  await page.eval(`(() => { const ins = globalThis.__mon.ins; const m = project.mixer[ins]; const was = m.mute; m.mute = true; engine.sync(); renderView(); globalThis.__restoreMute = () => { project.mixer[ins].mute = was; engine.sync(); renderView(); }; })()`);
+  await sleep(350);
+  const muted = await page.eval(`+engine.inserts[globalThis.__mon.ins].out.gain.value.toFixed(3)`);
+  expect(muted < 0.05, `mute no longer silences the track (gain ${muted})`);
+  await page.eval(`globalThis.__restoreMute()`);
+  await sleep(250);
+});
+
 /* --- undo / redo --- */
 await step('undo and redo put the project back', async () => {
   await page.eval(`document.querySelector('.tab[data-tab="rack"]').click()`);
