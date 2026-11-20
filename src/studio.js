@@ -65,9 +65,9 @@ const CHAINS = {
   /* Artist-style chains. Each mirrors the processing chain their engineers have described, plugin for plugin where we have an equivalent.
      Exact knob settings were never published, so settings are typical starting points for those processors. */
   breezy: { artist: true, label: 'Chris Brown style', short: 'Chris Brown',
-    desc: 'Teezio’s chain, tuned to sit under the voice rather than on top of it (26 ms with humanize and flex), 100 Hz cut and 5–7 kHz lift, Pultec air, 1176, RVox, Soothe, Pro-DS, Pro-C2, Doubler, quarter-note H-Delay, VintageVerb.',
+    desc: 'Teezio’s chain, tuned to sit under the voice rather than on top of it (40 ms with humanize and flex), 100 Hz cut and 5–7 kHz lift, Pultec air, 1176, RVox, Soothe, Pro-DS, Pro-C2, Doubler, quarter-note H-Delay, VintageVerb.',
     fx: [LEVEL,
-      ['th.autotune', { retune: 26, humanize: 0.22, flex: 0.2, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
+      ['th.autotune', { retune: 40, humanize: 0.35, flex: 0.15, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
       ['th.vocal-eq', { lowcut: 100, mud: -2, mudFreq: 300, presence: 1.5, presFreq: 5800, air: 3.5 }],
       ['th.vocal-comp', { mode: 'fet', amount: 0.32, ratio: 4, attack: 0.4, release: 120, output: 2.5 }],
       ['th.vocal-comp', { mode: 'vox', amount: 0.3, output: 1.5 }],
@@ -79,9 +79,9 @@ const CHAINS = {
       ['th.room-reverb', { size: 1.6, damp: 9500, predelay: 0.025, mix: 0.12 }],
       SAFE] },
   bieber: { artist: true, label: 'Justin Bieber style', short: 'Bieber',
-    desc: 'Josh Gudwin’s chain: light Auto-Tune (30 ms, natural), Manley-style cuts at 330 Hz and 3 kHz with an airy top, LA-2A then 1176, multiband smoothing, de-esser, Dimension D width, ping-pong delay, plate.',
+    desc: 'Josh Gudwin’s chain: light Auto-Tune (50 ms, natural), Manley-style cuts at 330 Hz and 3 kHz with an airy top, LA-2A then 1176, multiband smoothing, de-esser, Dimension D width, ping-pong delay, plate.',
     fx: [LEVEL,
-      ['th.autotune', { retune: 30, humanize: 0.3, flex: 0.25, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
+      ['th.autotune', { retune: 50, humanize: 0.4, flex: 0.2, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
       ['th.vocal-eq', { lowcut: 90, mud: -3, mudFreq: 330, presence: -1.5, presFreq: 3000, air: 3 }],
       ['th.vocal-comp', { mode: 'opto', amount: 0.38, output: 2.5 }],
       ['th.vocal-comp', { mode: 'fet', amount: 0.22, ratio: 4, attack: 0.8, release: 80, output: 1 }],
@@ -92,9 +92,9 @@ const CHAINS = {
       ['th.room-reverb', { size: 2.2, damp: 10000, predelay: 0.03, mix: 0.22 }],
       SAFE] },
   laroi: { artist: true, label: 'Kid LAROI style', short: 'Kid LAROI',
-    desc: 'Clint Gibbs’ chain: Auto-Tune Pro, moderate (20 ms) with humanize and flex so the tuning is felt but not heard, RVox, C6-style compression, Pro-DS, AE600 + Soothe resonance control, MicroShift back spread, eighth-note H-Delay, VintageVerb.',
+    desc: 'Clint Gibbs’ chain: Auto-Tune Pro, moderate (35 ms) with humanize and flex so the tuning is felt but not heard, RVox, C6-style compression, Pro-DS, AE600 + Soothe resonance control, MicroShift back spread, eighth-note H-Delay, VintageVerb.',
     fx: [LEVEL,
-      ['th.autotune', { retune: 20, humanize: 0.25, flex: 0.2, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
+      ['th.autotune', { retune: 35, humanize: 0.35, flex: 0.15, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
       ['th.vocal-eq', { lowcut: 100, mud: -2, mudFreq: 280, presence: 2, presFreq: 3000, air: 2.5 }],
       ['th.vocal-comp', { mode: 'vox', amount: 0.36, output: 2.5 }],
       ['th.vocal-comp', { mode: 'clean', amount: 0.25, ratio: 2.5, attack: 8, release: 120, output: 2.7 }],
@@ -107,7 +107,7 @@ const CHAINS = {
   mgk: { artist: true, label: 'MGK style', short: 'MGK',
     desc: 'Adam Hawkins’ chain: tuned polish, C4 + RCompressor, Decapitator grit, Pro-Q high-pass, Scheps Omni (300 Hz cut, very high ratio), R-De-Esser, a touch of dbx 160, J37 slap, MicroShift, eighth-note EchoBoy and Little Plate.',
     fx: [LEVEL,
-      ['th.autotune', { retune: 24, humanize: 0.2, flex: 0.15, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
+      ['th.autotune', { retune: 40, humanize: 0.3, flex: 0.15, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on' }],
       ['th.vocal-comp', { mode: 'clean', amount: 0.3, ratio: 3, attack: 5, release: 100, output: 1 }],
       ['th.vocal-comp', { mode: 'clean', amount: 0.22, ratio: 3, attack: 12, release: 140, output: 1 }],
       ['th.saturator', { drive: 0.35, tone: 9000, mix: 0.45, output: 0 }],
@@ -327,7 +327,7 @@ function upgradeChains(P) {
   });
 }
 /* One control for how obvious the tuning is, applied to the Tune on a track while you sing. */
-const TUNE_FEELS = [['natural', 'Natural', 35, 0.3, 0.3, 'on'], ['smooth', 'Smooth', 20, 0.15, 0.15, 'on'], ['autotune', 'Auto-Tune', 10, 0, 0, 'off'], ['hard', 'Hard', 4, 0, 0, 'off'], ['robot', 'Robot', 0, 0, 0, 'off']];
+const TUNE_FEELS = [['natural', 'Natural', 60, 0.45, 0.2, 'on'], ['smooth', 'Smooth', 35, 0.3, 0.15, 'on'], ['autotune', 'Auto-Tune', 12, 0.1, 0, 'on'], ['hard', 'Hard', 4, 0, 0, 'off'], ['robot', 'Robot', 0, 0, 0, 'off']];
 function tuneFeelOf(f) { const r = +((f.params || {}).retune ?? 20); let best = TUNE_FEELS[0], bd = 1e9; for (const t of TUNE_FEELS) { const d = Math.abs(t[2] - r); if (d < bd) { bd = d; best = t; } } return best[0]; }
 function setTuneFeel(ins, id) {
   const t = TUNE_FEELS.find(x => x[0] === id); if (!t) return;

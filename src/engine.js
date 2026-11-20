@@ -7,7 +7,7 @@
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.7.1';
+const APP_VERSION = '2.7.2';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {

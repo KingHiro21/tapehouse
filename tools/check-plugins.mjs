@@ -142,6 +142,48 @@ try {
     verify('a note change is followed within 120 ms', !!change && change.t < 0.72, JSON.stringify(jump.changes));
     verify('and the new note is the right one', jump.core.report().t === midiOf(293.66), JSON.stringify(jump.core.report()));
   }
+  /* Zero depth should not process the voice at all (apart from the fixed delay). This
+     signal combines voiced harmonics and deterministic breath-like noise. */
+  {
+    const core = new TuneCore(SR, { ...base, amount: 0 });
+    const input = new Float32Array(128), output = new Float32Array(128), all = new Float32Array(SR), heard = new Float32Array(SR);
+    let seed = 42;
+    for (let i = 0; i < all.length; i++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
+      all[i] = 0.15 * Math.sin(2 * Math.PI * (173 + i / SR * 12) * i / SR) + 0.03 * (seed / 2147483648);
+    }
+    for (let at = 0; at < all.length; at += 128) {
+      input.set(all.subarray(at, at + 128)); core.process(input, output, 128); heard.set(output, at);
+    }
+    let peak = 0;
+    for (let i = core.L; i < heard.length; i++) peak = Math.max(peak, Math.abs(heard[i] - all[i - core.L]));
+    verify('zero Tune depth preserves the delayed original', peak < 1e-6, `peak error ${peak}`);
+  }
+
+  /* When breath/noise is unvoiced, it should pass through without grain artifacts. */
+  {
+    const core = new TuneCore(SR, { ...base, retune: 40, humanize: 0.3 });
+    const input = new Float32Array(128), output = new Float32Array(128), all = new Float32Array(SR), heard = new Float32Array(SR);
+    let seed = 91;
+    for (let i = 0; i < all.length; i++) { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; all[i] = 0.1 * (seed / 2147483648); }
+    let voiced = 0;
+    for (let at = 0; at < all.length; at += 128) {
+      input.set(all.subarray(at, at + 128)); core.process(input, output, 128); heard.set(output, at);
+      if (core.voiced) voiced++;
+    }
+    let peak = 0;
+    for (let i = core.L; i < heard.length; i++) peak = Math.max(peak, Math.abs(heard[i] - all[i - core.L]));
+    verify('unvoiced noise passes through without grains', voiced === 0 && peak < 1e-6, `voiced frames ${voiced}, peak error ${peak}`);
+  }
+
+  /* Slow retune must remain slow at note onsets rather than being forced to 12 ms. */
+  {
+    const slow = sing(0.08, () => 440 * Math.pow(2, 35 / 1200), { mask: 0xFFF, retune: 80, humanize: 0, flex: 0 });
+    const fast = sing(0.08, () => 440 * Math.pow(2, 35 / 1200), { mask: 0xFFF, retune: 0, humanize: 0, flex: 0 });
+    verify('slower retune preserves the start of a note', Math.abs(slow.core.s) < Math.abs(fast.core.s) * 0.75,
+      `slow ${slow.core.s.toFixed(3)}, fast ${fast.core.s.toFixed(3)}`);
+  }
+
   /* 5. the tuner reads a real pitch accurately - the readout was once 87 cents sharp */
   {
     const readings = [];

@@ -460,6 +460,32 @@ await step('Tune runs on the audio thread with the song key', async () => {
   expect(info.latency >= 0 && info.latency < 60, `the chain reports ${info.latency} ms`);
 });
 
+await step('voice profiles preserve preset tuning character', async () => {
+  const result = await page.eval(`(() => {
+    const ins = ui.vsIns, m = project.mixer[ins], oldFx = m.fx, oldProfile = suiteVoiceProfile;
+    const problems = [];
+    try {
+      for (const artist of SUITE_ARTISTS) {
+        suiteApplyArtist(project, ins, artist);
+        const f = suiteClassify(m.fx).tune;
+        if (!f) { problems.push(artist.id + ': no Tune'); continue; }
+        const before = JSON.stringify([f.params.retune, f.params.humanize, f.params.flex, f.params.fcorr]);
+        if (!artist.hard && (+f.params.retune < 35 || +f.params.humanize < 0.3 || f.params.fcorr !== 'on')) problems.push(artist.id + ': too hard');
+        suiteVoiceProfile = { a: { f0: { mid: 95 }, notes: Array(80).fill(60.4) } };
+        suiteApplyProfileTune(ins);
+        const after = JSON.stringify([f.params.retune, f.params.humanize, f.params.flex, f.params.fcorr]);
+        if (before !== after || f.params.voice !== 'low') problems.push(artist.id + ': profile changed sound or missed voice');
+      }
+      suiteApplyArtist(project, ins, SUITE_ARTISTS.find(a => a.id === 'tpain'));
+      const hard = suiteClassify(m.fx).tune.params;
+      if (+hard.retune !== 0 || hard.fcorr !== 'off') problems.push('T-Pain: hard tuning lost');
+      if (TUNE_FEELS.find(f => f[0] === 'natural')[2] <= TUNE_FEELS.find(f => f[0] === 'smooth')[2]) problems.push('natural feel not slower');
+    } finally { m.fx = oldFx; suiteVoiceProfile = oldProfile; engine.sync(); }
+    return problems;
+  })()`);
+  expect(result.length === 0, result.join(', '));
+});
+
 /* --- monitoring: the mix must not silence the voice you are hearing back --- */
 await step('the mix cannot silence or pan the live voice', async () => {
   /* "Hear myself" used to run through the track's mute, solo and pan, so muting the vocal (or soloing the drums)

@@ -11,7 +11,7 @@ const SUITE_DEF = { // added only when a control needs them, set so they change 
   nc: ['th.denoise', { amount: 0, floor: -18 }],
   deecho: ['th.dereverb', { amount: 0, floor: -12 }],
   level: ['th.vocal-comp', { mode: 'auto', target: -20 }],
-  tune: ['th.autotune', { retune: 20, humanize: 0.15, flex: 0.1, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'off', root: -1, smode: 'minor' }],
+  tune: ['th.autotune', { retune: 40, humanize: 0.35, flex: 0.2, amount: 1, formant: 0, voice: 'tenor', scale: 'key', fcorr: 'on', root: -1, smode: 'minor' }],
   eqm: ['th.match-eq', { lowcut: 30, g0: 0, g1: 0, g2: 0, g3: 0, g4: 0, g5: 0, g6: 0, g7: 0, g8: 0, g9: 0, g10: 0 }],
   eq: ['th.vocal-eq', { lowcut: 30, mud: 0, mudFreq: 280, presence: 0, presFreq: 3000, air: 0 }],
   comp: ['th.vocal-comp', { mode: 'opto', amount: 0.05, output: 0 }],
@@ -408,8 +408,13 @@ function suiteApplyArtist(P, ins, a) {
   const map = suiteClassify(P.mixer[ins].fx);
   for (const [id, v] of Object.entries(a.s)) { const ch = SUITE_MACROS[id].set(v, map); for (const r in ch) if (map[r]) Object.assign(map[r].params, ch[r]); }
   if (a.ch) map.comp.params.mode = a.ch;
-  // formant fix stays on unless the artist is explicitly the hard-tuned sound: formants that follow the pitch shift are
-  // what makes a corrected voice read as robotic, and “automatically sound good” means natural first
+  // Most artist starting points should sound like a person, not an effect. Preserve the
+  // deliberately hard-tuned styles; use gentler settings for the rest.
+  if (!a.hard) {
+    map.tune.params.retune = Math.max(35, +map.tune.params.retune || 0);
+    map.tune.params.humanize = Math.max(0.3, +map.tune.params.humanize || 0);
+    map.tune.params.flex = Math.max(0.1, +map.tune.params.flex || 0);
+  }
   map.tune.params.fcorr = a.hard ? 'off' : 'on';
   map.comp.params.output = +suiteMakeup(map.comp.params.mode, a.s.compress || 0).toFixed(2);
   if (a.time) map.delay.params.time = a.time;
@@ -434,7 +439,7 @@ function suiteLoadPreset(ins, p) {
     m.vsPreset = p.name; delete m.vsMod;
     m.vsTarget = p.kind === 'user' ? (p.target || m.vsTarget || 'clean') : p.id; // who this preset sounds like
   });
-  suiteApplyProfileTune(ins); // your remembered voice: Tune starts from your range and drift, before any match
+  suiteApplyProfileTune(ins); // remember the voice range without changing the preset's sound
   if (engine && usesDsp(project)) engine.loadDsp(); // start the fast engine now, so it is ready before the mic opens
   suiteAutoMatch(ins);
 }
@@ -487,9 +492,9 @@ function suiteParse(text) {
   const robotFix = /\b(too robot\w*|less robot\w*|sounds? like a robot|sound like a robot|like a robot\b|not robot\w*|no robot\w*|don'?t want (it |to sound )?robot\w*)\b/.test(t);
   const robotMake = !robotFix && (/\b(hard[- ]?tune|hard tuned|super tuned|t-?pain effect)\b/.test(t) || /\brobot\w*\b/.test(t)) && !art;
   if (robotMake) ops.push({ set: 'retune', v: 0 }, { set: 'humanize', v: 0 }, { fcorr: 'off' }, { tuneOn: true });
-  else if (robotFix) ops.push({ set: 'retune', v: 35 }, { set: 'humanize', v: 35 }, { fcorr: 'on' }, { tuneOn: true });
+  else if (robotFix) ops.push({ set: 'retune', v: 60 }, { set: 'humanize', v: 45 }, { set: 'flex', v: 20 }, { fcorr: 'on' }, { tuneOn: true });
   else if (/\b(no autotune|without autotune|autotune off|turn off (the )?autotune|no tun|untuned|raw pitch)\w*/.test(t)) ops.push({ tuneOff: true });
-  else if (/\b(natural|transparent|subtle tun\w*|less obvious|not obvious|invisible)\b/.test(t) && !art) ops.push({ set: 'retune', v: 40 }, { set: 'humanize', v: 35 }, { fcorr: 'on' }, { tuneOn: true });
+  else if (/\b(natural|transparent|subtle tun\w*|less obvious|not obvious|invisible)\b/.test(t) && !art) ops.push({ set: 'retune', v: 60 }, { set: 'humanize', v: 45 }, { set: 'flex', v: 20 }, { fcorr: 'on' }, { tuneOn: true });
   else if ((h = has(/\b(autotune|tune|tuning|pitch correction|tuned|pitchy|off[- ]key)\b/))) {
     const pitchy = /\b(pitchy|off[- ]key|out of tune|flat notes|sharp notes)\b/.test(t), less = !pitchy && (h.neg || /\b(softer|subtler|lighter|gentler)\b/.test(t));
     if (!key || /\b(more|less|harder|softer|stronger|lighter|heavier)\b/.test(t) || pitchy) ops.push({ add: 'retune', v: (less ? 15 : -15) * k }, ...(less ? [] : [{ tuneOn: true }]));
@@ -569,7 +574,7 @@ function suiteState(ins) {
   return o;
 }
 async function suiteAskClaude(ins, text) {
-  const ranges = Object.entries(SUITE_MACROS).map(([id, d]) => `${id} (${d.label}): ${d.min} to ${d.max}${d.fmt === dbf ? ' dB' : id === 'size' ? ' seconds' : id === 'retune' ? ' ms, 0 = hard robotic, 10-15 modern R&B, 20-40 natural' : id === 'lowcut' ? ' Hz' : ''}`).join('\n');
+  const ranges = Object.entries(SUITE_MACROS).map(([id, d]) => `${id} (${d.label}): ${d.min} to ${d.max}${d.fmt === dbf ? ' dB' : id === 'size' ? ' seconds' : id === 'retune' ? ' ms, 0 = hard robotic, slower settings retain more natural phrasing' : id === 'lowcut' ? ' Hz' : ''}`).join('\n');
   const prompt = `You are the assistant inside a vocal processing plugin. Answer the singer's request by choosing settings.
 The singer said: "${text}"
 Current settings: ${JSON.stringify(suiteState(ins))}
@@ -899,7 +904,7 @@ function suitePanel(ins, tab, map) {
     const prof = suiteVoiceProfile;
     const profLine = prof ? el('div', { class: 'vs-feel' },
       el('span', { class: 'vs-hint' }, `Knows your voice: ${prof.label}, ${suiteProfileWords(prof)}`),
-      el('button', { class: 'vs-chip', title: 'Set Tune’s voice type and speed from what it learned about you', onclick: () => { suiteApplyProfileTune(ins); renderView(); toast('Tune set from your voice profile.'); } }, 'Fit to my voice'),
+      el('button', { class: 'vs-chip', title: 'Set Tune’s voice type from what it learned about you without changing your sound', onclick: () => { suiteApplyProfileTune(ins); renderView(); toast('Tune’s voice type set from your profile.'); } }, 'Fit to my voice'),
       el('button', { class: 'vs-chip', title: 'Forget this voice', onclick: () => { suiteForgetVoice(); renderView(); } }, 'Forget')) : null;
     return [headRow, el('div', { class: 'vs-tune' }, keyBox, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex', 'depth', 'formant']), feel)), profLine];
   }
@@ -1140,7 +1145,7 @@ function suiteKeyText(ins) {
    Sound like: the preset says who you want to sound like; this makes YOUR voice land there.
    It listens to your take (or 10 seconds of singing), runs it through the preset, measures the result against that
    artist's sound and fits the chain to you: tone (a match EQ checked by re-measuring), compression for your dynamics,
-   Tune speed for how far you drift off the notes, de-esser, gate, voice type and level. One undo step.
+   De-esser, gate, voice type and level, while keeping the chosen Tune sound. One undo step.
    ===================================================================== */
 // The sound each preset aims for: a produced lead-vocal tone (LM_BASE) tilted per artist, plus how even and how
 // sibilant it is. Our read of each artist's records, so a starting point rather than their engineer's settings.
@@ -1198,7 +1203,7 @@ async function suiteCaptureMic(ins, tick) {
 }
 /* ---------- your voice, remembered ---------- */
 /* One analysis of a recording of your voice (a take, an import, 10 seconds live), kept across sessions. Every
-   preset you load afterwards starts from it: Tune is set for your voice type and how far you drift, so it tracks
+   preset you load afterwards starts from it: Tune is set for your voice type, so it tracks
    your notes before you even press Match. undefined = not loaded yet, null = learned nothing (or forgotten). */
 let suiteVoiceProfile;
 function suiteProfileWords(p) {
@@ -1207,23 +1212,13 @@ function suiteProfileWords(p) {
   const drift = suiteDrift(a, { params: { scale: 'key', root: -1, smode: 'minor' } });
   return `${{ soprano: 'a high voice', low: 'a low voice', tenor: 'a mid-range voice' }[lmVoiceType(a)]} (${nm(a.f0.lo)}–${nm(a.f0.hi)})${drift != null ? `, drifting about ${Math.round(drift)} cents` : ''}`;
 }
-/* Sets the track's Tune from the profile: voice type always, retune faster only if you drift hard (the same
-   adjustment the fit makes after a take, so both paths agree). */
+/* A voice profile chooses the tracking range, not the musical sound. Measured deviation
+   includes vibrato and slides, so it cannot safely choose retune speed or erase humanize. */
 function suiteApplyProfileTune(ins) {
   const p = suiteVoiceProfile; if (!p || !p.a) return;
   const m = project.mixer[ins]; if (!m) return;
   const tf = suiteClassify(m.fx).tune; if (!tf || tf.bypass) return;
   const ch = { voice: lmVoiceType(p.a) };
-  const drift = suiteDrift(p.a, { params: { scale: tf.params.scale || 'key', root: tf.params.root == null ? -1 : tf.params.root, smode: tf.params.smode || 'minor' } });
-  if (drift != null && drift >= 12) {
-    // presets written for pros who sing in tune barely correct a voice that drifts: pull the speed up
-    // (and the wobble-keeping humanize down) in proportion to how far off you actually sing
-    ch.retune = Math.round(clamp(360 / Math.max(drift, 12), 8, 30));
-    if (drift >= 20) {
-      ch.humanize = +clamp((+tf.params.humanize || 0.2) * 0.5, 0, 0.4).toFixed(2);
-      ch.flex = +clamp((+tf.params.flex || 0) * 0.5, 0, 0.5).toFixed(2);
-    }
-  }
   for (const k in ch) if (tf.params[k] !== ch[k]) { tf.params[k] = ch[k]; if (engine) engine.setFxParam(ins, tf.id, k, ch[k]); }
   changed({ render: false });
 }
@@ -1363,16 +1358,8 @@ async function suiteMatch(ins, opts = {}) {
         const want = clamp(cur + (ex2 > 1 ? ex2 * 4 : ex2 < -2 ? ex2 * 2 : 0), 10, 85);
         if (Math.abs(want - cur) >= 4) { const ch = SUITE_MACROS.compress.set(want, map); for (const r in ch) if (map[r]) Object.assign(map[r].params, ch[r]); did.push(want > cur ? `Your loud and soft lines are ${a.lra.toFixed(0)} dB apart (${tg.label}: about ${tg.lra}), so compression evens you out more` : 'You sing very evenly already, so compression eases off'); }
       }
-      const tf = map.tune && !map.tune.bypass ? map.tune : null, drift = suiteDrift(a, tf);
-      if (tf && drift != null) {
-        const r0 = +tf.params.retune, r1 = Math.round(clamp(360 / Math.max(drift, 12), 8, 30));
-        if (drift >= 12 && r0 > r1 + 2) {
-          tf.params.retune = r1;
-          if (drift >= 20) { tf.params.humanize = +clamp((+tf.params.humanize || 0.2) * 0.5, 0, 0.4).toFixed(2); tf.params.flex = +clamp((+tf.params.flex || 0) * 0.5, 0, 0.5).toFixed(2); }
-          did.push(`You drift about ${Math.round(drift)} cents off the notes and this preset is tuned for someone who doesn’t, so Tune now pulls in ${r1} ms instead of ${r0} ms (and keeps less of the wobble) — that’s the correction you can actually hear`);
-        }
-        else if (drift <= 12 && r0 <= 10 && !tg.artist) did.push(`You’re within ${Math.round(drift)} cents of the notes: nice and in tune`);
-      }
+      // Matching may choose the voice range, but should not silently harden the chosen
+      // Tune sound: deviation also includes intentional slides and vibrato.
       suiteEnsure(Q, ins, ['eqm']); map = suiteClassify(fx);
       const eqm = map.eqm; if (eqm) { eqm.bypass = false; eqm.params.lowcut = lmLowCut(a); eqm.params.trim = 0; delete m.matchOff; LM_EQ.forEach((_, k) => { eqm.params['g' + k] = 0; }); }
       // tone, checked by ear (well, by measuring): through the preset as it is, then with the match EQ, then once more to refine

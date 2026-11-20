@@ -34,6 +34,7 @@ class TuneCore {
     this.clarity = 0; this.vibDepth = 0; this.slowM = 0; this.slowOn = false;
     this.noteAvg = 0; this.avgOn = false; this.devs = []; this.phraseT = 0;
     this.uvT = Math.round(sr * 0.006); this.gx = 1; this.gv = false;
+    this.dryMix = 1; // delayed original for unvoiced sounds and zero correction
     this.msI = 0; this.msO = 0; this.gain = 1; this.agcA = 1 - Math.exp(-1 / (0.05 * sr));
     this.p = { retune: 20, humanize: 0.2, flex: 0, amount: 1, formant: 0, voice: 'tenor', mask: 0xFFF, live: false, fcorr: 1 };
     this.set(p || {});
@@ -195,7 +196,10 @@ class TuneCore {
     }
     // Retune works like Auto-Tune's: milliseconds, 0 = instant (hard tune), 10–50 = natural with more vibrato coming through as it rises
     let tau = Math.max(0, +p.retune || 0) / 1000;
-    if (tau > 0 && this.sinceNew < 0.05) tau = Math.min(tau, 0.012); // land on a new note quickly, then settle into it
+    // Do not override the user's slower settings at the start of every note: an abrupt
+    // 12 ms landing flattens slides and makes even the Natural preset sound hard-tuned.
+    // Progressively shorten the landing at fast settings without a discontinuity.
+    if (tau > 0 && this.sinceNew < 0.05) tau = Math.min(tau, Math.max(0.012, tau * 0.6));
     if (p.humanize > 0) { // Humanize keeps a held note living: it slows down and lets a real vibrato through
       const sustain = Math.min(1, Math.max(0, (this.held - 0.12) / 0.35));
       tau += p.humanize * (0.15 + 0.4 * this.vibDepth) * sustain;
@@ -242,14 +246,21 @@ class TuneCore {
     this.eDone = e0;
     while (this.sNext <= eEnd + this.maxHalf) this.grain();
     // level match: grains pulled away from their pitch overlap partly out of phase and lose a little level
-    const out = this.out, ws = this.wsum, a = this.agcA; let g = this.gain;
+    const out = this.out, ws = this.wsum, a = this.agcA; let g = this.gain, dry = this.dryMix;
+    // Grain synthesis is unnecessary for breaths and consonants, and processing them can
+    // add metallic texture. Zero depth with a neutral formant must also be transparent.
+    // Crossfade to the latency-aligned input; never mix an undelayed copy into the output.
+    const dryTarget = (!this.voiced || (+this.p.amount <= 0 && Math.abs(+this.p.formant || 0) < 1e-6)) ? 1 : 0;
+    const fade = 1 - Math.exp(-1 / (0.008 * this.sr));
     for (let i = 0; i < len; i++) {
       // divide by the exact sum of the overlapping windows: no level ripple however far apart the grains land (deep voices too)
       const k = (e0 + i) & M, wk = ws[k], yo = out[k] / (wk > 0.35 ? wk : 0.35), xi = inp[k];
       ws[k] = 0;
       this.msI += (xi * xi - this.msI) * a; this.msO += (yo * yo - this.msO) * a;
-      y[i] = yo * g; out[k] = 0;
+      dry += (dryTarget - dry) * fade;
+      y[i] = yo * g * (1 - dry) + xi * dry; out[k] = 0;
     }
+    this.dryMix = dry;
     let tg = 1;
     if (this.voiced && Math.abs(this.s) > 0.02 && this.msI > 1e-8 && this.msO > 1e-9) tg = Math.max(0.8, Math.min(1.25, Math.sqrt(this.msI / this.msO)));
     this.gain = g + (tg - g) * (1 - Math.exp(-len / (0.06 * this.sr)));
