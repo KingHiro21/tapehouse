@@ -7,10 +7,10 @@
    Pure DSP classes. They must stay self-contained (no outside helpers): the same
    source runs on the main thread (fallback) and inside the AudioWorklet. */
 class TuneCore {
-  /* Look-ahead in samples. Grains reach half a window back and forth (plus formant stretch);
-     live mode uses shorter grains so monitoring feels immediate, renders use the full-quality size. */
-  /* Live grains are longer than they used to be (132 vs 170): a window shorter than the sung period locks phases badly and
-     reads as metallic. The extra ~4 ms of monitoring latency buys a much more natural sound. */
+  /* Look-ahead in samples: a grain reaches half a window either way, it may be placed a period ahead,
+     and the formant stretch reads up to a minor third further. A shorter look-ahead than that makes a
+     grain read past the audio that has arrived, which doubles the level and clicks, so this stays
+     generous. Live mode uses shorter grains so monitoring feels immediate; renders use the full size. */
   static grainHalf(sr, live, voice) { return Math.round(sr / (!live || voice === 'low' ? 110 : voice === 'soprano' ? 155 : 132)); }
   static latency(sr, live, voice) { return Math.ceil(TuneCore.grainHalf(sr, live, voice) * (1 + Math.pow(2, 3 / 12))) + 2; }
   constructor(sr, p) {

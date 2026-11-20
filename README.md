@@ -50,6 +50,17 @@ Projects save as `.tapehouse` bundles. The installer registers that extension, s
 double-clicking one opens it; a file dropped onto `Tapehouse.exe` (or passed to a
 second launch of an open app) opens in the window that is already running.
 
+### The vocal screen (v2.7)
+
+One console: the record card on top, then the note display — the note under your voice, how far
+off it is, and the notes Tune will land it on — which stays on screen whichever module you have
+open. Under it are the five modules (Tune, Cleanup, Tone, Dynamics, Space) and the voice
+assistant, which folds away into a summary bar once it has nothing new to say and opens by
+itself while it is matching or when there is a result to show.
+
+The tuner reads the mic through the same YIN detector Tune uses, so the note shown and the note
+tuned always agree; it is accurate to a cent from 45 Hz to 1.6 kHz.
+
 ### The vocal tools (v2.3)
 
 The Vocal screen carries Tune (pitch correction with formant fix so it doesn't sound robotic),
@@ -101,6 +112,16 @@ The icon is drawn by `tools/make-icon.py` (needs Pillow) into `build/icon.png` a
 
 Run the wrapper without packaging with `npm start` (builds `dist/`, then opens the window)
 or `npx electron .` after a build.
+
+`npm run check:ui` drives the real app — the packaged exe if you pass one, otherwise the local
+Electron build — over the DevTools protocol. It opens every screen, plays and stops, retunes the
+song, toggles steps, draws a note, arranges the playlist, moves faders, adds a plugin, searches
+the library, sets up a vocal track, opens all five chain modules, turns every knob with the
+keyboard and with the mouse, flips bypass, steps presets, asks the assistant for a change, checks
+the tuner against known pitches, undoes and redoes, generates and keeps a song, and finally
+asserts that the console logged no error. Add `--shots <dir>` to keep a screenshot of every
+screen. The Windows workflow runs it on the packaged build, so a control that stops doing
+anything fails the build.
 
 `npm run check:shell` loads `electron/main.js` in plain Node against a stub Electron
 (`tools/stub-electron.js`), so it needs no display and no Electron binary. It asserts:

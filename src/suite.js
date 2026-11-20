@@ -683,7 +683,15 @@ function renderVocal(v) {
         onStart: () => { ui.vsDragged = false; }, onInput: x => { if (!ui.vsDragged) { pushUndo(); ui.vsDragged = true; } if (isIn) m.trim = +x.toFixed(1); else m.vol = clamp(Math.pow(10, x / 20), 0, 1.25); changed({ render: false }); }, onEnd: () => { ui.vsDragged = false; } }),
       el('div', { class: 'vs-meter', 'data-meter': side, 'aria-hidden': 'true' }, Array.from({ length: 14 }, () => el('i'))));
   };
-  const screen = vsAssist(ins, m);
+  // The assistant is a conversation, not a knob: it folds away once it has nothing new to say, and
+  // opens by itself while it is matching or when there is a result to show.
+  const asstBusy = !!(ui.vsM && ui.vsM.ins === ins && ui.vsM.busy);
+  const asstOpen = ui.vsAsst == null ? (!suiteTakeClip(ins) || !!m.vsMatch || asstBusy) : !!ui.vsAsst;
+  const assistant = el('details', { class: 'vs-asst', open: asstOpen || asstBusy, ontoggle: e => { if (!e.target.open && (ui.vsM && ui.vsM.busy)) { e.target.open = true; return; } ui.vsAsst = e.target.open; } },
+    el('summary', { class: 'vs-asst-sum' }, icon('chat'), el('span', { class: 'vs-asst-t' }, 'Voice assistant'),
+      el('b', {}, `Make me sound like ${(suiteTargetFor(m) || {}).label || 'this'}`),
+      el('span', { class: 'vs-asst-hint' }, m.vsMatch ? 'Matched — see what it changed' : 'Match my voice, or just ask for a change')),
+    vsAssist(ins, m));
   const tabs = el('div', { class: 'vs-tabs', role: 'tablist' }, SUITE_MODS.map(([id, label, roles]) => {
     const on = roles.some(r => map[r] && !map[r].bypass);
     return el('button', { role: 'tab', class: 'vs-tab', 'aria-selected': String(ui.vsTab === id), onclick: () => { ui.vsTab = id; renderView(); } }, el('span', { class: 'vs-led' + (on ? ' on' : '') }), label);
@@ -695,7 +703,7 @@ function renderVocal(v) {
     el('span', { class: 'muted small mono rec-diag' + (engine && engine.dsp === 'failed' ? ' warn' : '') }, `Tapehouse ${APP_VERSION}${STANDALONE ? ' · recording edition' : ''}${eng ? ' · ' + eng : ''}${ctx ? ' · ' + Math.round(ctx.sampleRate / 100) / 10 + ' kHz' : ''}`,
       engine && engine.dsp === 'failed' ? ' · This browser blocked the fast audio engine, so effects run on a backup that can crackle. Use Chrome or Edge and keep this tab in front.' : ''));
   v.append(el('div', { class: 'view-body vs', 'data-scroll': 'vs' }, el('div', { class: 'vs-wrap' }, el('div', { class: 'vs-face' }, el('i', { class: 'vs-screw a' }), el('i', { class: 'vs-screw b' }), el('i', { class: 'vs-screw c' }), el('i', { class: 'vs-screw d' }),
-    head, saving, vsRecord(ins, m), el('div', { class: 'vs-core' }, io('in'), screen, io('out')), tabs, panel), foot)));
+    head, saving, vsRecord(ins, m), el('div', { class: 'vs-core' }, io('in'), vsStage(ins, m), io('out')), tabs, panel, assistant), foot)));
   const log = $('#vsChat'); if (log) log.scrollTop = log.scrollHeight;
   if (ui.vsKeep) { const kb = $$('.vs .knob').find(x => x.getAttribute('aria-label') === ui.vsKeep); ui.vsKeep = null; if (kb && document.activeElement === document.body) kb.focus({ preventScroll: true }); }
   if (ui.vsFocus) { ui.vsFocus = false; const q = $('.vs-ask input'); if (q) q.focus({ preventScroll: true }); }
@@ -753,6 +761,17 @@ function vsAssist(ins, m) {
     el('input', { name: 'q', autocomplete: 'off', placeholder: isWide() ? 'Anything else? “less autotune”, “more reverb”, “sound like Drake”' : 'e.g. “less autotune”', 'aria-label': 'Tell the assistant what to change' }),
     el('button', { type: 'submit', class: 'vs-send', 'aria-label': 'Send' }, '➤'));
   return el('div', { class: 'vs-crt' + (busy || ui.vsChat.some(c => c.busy) || ui.vsListening ? ' busy' : '') }, el('div', { class: 'vs-crt-in vsa' }, head, go, profRow, status, result, chat, ask));
+}
+/* The stage: what you watch while singing. The note under your voice, how far off it is, and the
+   notes Tune will land it on - on screen whichever effect panel is open. */
+function vsStage(ins, m) {
+  const tf = suiteClassify(m.fx).tune;
+  const mask = tuneMask(project, tf ? tf.params.scale : 'key', tf ? tf.params.root : -1, tf ? tf.params.smode : 'minor');
+  const note = el('div', { class: 'vs-note' }, el('span', { class: 'vs-lbl' }, 'Current note'), el('b', { id: 'vsNote' }, '– –'),
+    el('div', { class: 'vs-cents' }, el('i', { id: 'vsNeedle' }), el('span', {}, '−50'), el('span', {}, '−25'), el('span', {}, '0'), el('span', {}, '+25'), el('span', {}, '+50')),
+    el('small', { id: 'vsNoteSub' }, REC.stream ? 'Sing a note' : 'Press Hear myself or Record, then sing'));
+  return el('div', { class: 'vs-stage' }, note, el('div', { class: 'vs-stage-keys' }, vsKeys(mask),
+    el('span', { class: 'vs-stage-hint' }, tf && tf.bypass ? 'Tune is off for this track' : `Tune snaps to ${suiteKeyName(tf && +tf.params.root >= 0 ? +tf.params.root : project.key, (tf && +tf.params.root >= 0 ? tf.params.smode : project.scale) || 'minor')}`)));
 }
 /* The Record section: the one place for everything about getting a take in (mic, count-in, loop, timing, takes) and what
    happened to it after (the polish). The Record button at the top does exactly the same as the big button here. */
@@ -871,21 +890,18 @@ function suitePanel(ins, tab, map) {
         el('button', { role: 'radio', 'aria-checked': String((id === 'own') === own), class: (id === 'own') === own ? 'on' : '', title: id === 'song' ? 'Snap to the song’s key, the one at the top, which follows your beat' : 'Give Tune a key of its own, without changing the song', onclick: () => setMode(id) }, lab))),
       el('span', { class: 'vs-lbl' }, 'Key'), el('div', { class: 'vs-step' }, el('button', { class: 'vs-key', 'aria-label': 'Key down', onclick: () => setTo((root + 11) % 12, smOk) }, '‹'), el('span', { class: 'vs-lcd' + (SK.busy && !own ? ' busy' : '') }, suiteKeyName(root, sm)), el('button', { class: 'vs-key', 'aria-label': 'Key up', onclick: () => setTo((root + 1) % 12, smOk) }, '›')),
       el('span', { class: 'vs-lbl' }, 'Scale'), el('div', { class: 'vs-step' }, el('button', { class: 'vs-key', 'aria-label': 'Scale back', onclick: () => setTo(root, modes[(modes.indexOf(smOk) + modes.length - 1) % modes.length]) }, '‹'), el('span', { class: 'vs-lcd' }, ((SCALES[sm] || {}).label || sm).replace('minor pentatonic', 'min penta').replace('major pentatonic', 'maj penta').replace('harmonic minor', 'harm minor')), el('button', { class: 'vs-key', 'aria-label': 'Scale forward', onclick: () => setTo(root, modes[(modes.indexOf(smOk) + 1) % modes.length]) }, '›')),
-      vsKeys(tuneMask(project, tf ? tf.params.scale : 'key', tf ? tf.params.root : -1, tf ? tf.params.smode : 'minor')),
       status,
       own ? null : el('div', { class: 'vs-feel' },
         el('button', { class: 'vs-chip', disabled: SK.busy, title: 'Listen to the beat again and update the song key', onclick: () => smartKeyRun(true) }, 'Listen to my beat'),
         differs ? el('button', { class: 'vs-chip lit', onclick: () => setKey(sk.root, sk.mode) }, `Use ${suiteKeyName(sk.root, sk.mode)} ${sk.mode}`) : null),
       el('div', { class: 'vs-lstoggle' }, el('span', { class: REC.mon ? 'on' : '' }, 'Live'), el('span', { class: REC.mon ? '' : 'on' }, 'Studio')));
-    const note = el('div', { class: 'vs-note' }, el('span', { class: 'vs-lbl' }, 'Current note'), el('b', { id: 'vsNote' }, '– –'),
-      el('div', { class: 'vs-cents' }, el('i', { id: 'vsNeedle' }), el('span', {}, '−50'), el('span', {}, '−25'), el('span', {}, '0'), el('span', {}, '+25'), el('span', {}, '+50')), el('small', { id: 'vsNoteSub' }, 'Sing or play a vocal'));
     const feel = el('div', { class: 'vs-feel' }, TUNE_FEELS.map(([id, lab, rt]) => el('button', { class: 'vs-chip' + (tf && tuneFeelOf(tf) === id ? ' lit' : ''), onclick: () => { const t = TUNE_FEELS.find(x => x[0] === id); mutate(P => { suiteEnsure(P, ins, ['tune']); const f = suiteClassify(P.mixer[ins].fx).tune; f.bypass = false; Object.assign(f.params, { retune: t[2], humanize: t[3], flex: t[4], fcorr: t[5] }); }); } }, lab)));
     const prof = suiteVoiceProfile;
     const profLine = prof ? el('div', { class: 'vs-feel' },
       el('span', { class: 'vs-hint' }, `Knows your voice: ${prof.label}, ${suiteProfileWords(prof)}`),
       el('button', { class: 'vs-chip', title: 'Set Tune’s voice type and speed from what it learned about you', onclick: () => { suiteApplyProfileTune(ins); renderView(); toast('Tune set from your voice profile.'); } }, 'Fit to my voice'),
       el('button', { class: 'vs-chip', title: 'Forget this voice', onclick: () => { suiteForgetVoice(); renderView(); } }, 'Forget')) : null;
-    return [headRow, el('div', { class: 'vs-tune' }, keyBox, note, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex', 'depth', 'formant']), feel)), profLine];
+    return [headRow, el('div', { class: 'vs-tune' }, keyBox, el('div', { class: 'vs-tknobs' }, knobs(['retune', 'humanize', 'flex', 'depth', 'formant']), feel)), profLine];
   }
   if (tab === 'cleanup') return [headRow, knobs(['gate', 'nc', 'deecho', 'deess', 'tamer', 'lowcut']), el('p', { class: 'vs-hint' }, 'Noise removal takes out static hiss, hum and fan noise, De-echo tightens room echo around your lines, De-ess tames S sounds, Tamer pulls down harsh ringing, Noise gate quiets everything between phrases.')];
   if (tab === 'tone') return [headRow, knobs(['warmth', 'presence', 'air', 'grit']), map.eqm ? el('p', { class: 'vs-hint' }, 'Listen & Match’s EQ stays underneath; these are your moves on top.') : null];
@@ -934,27 +950,33 @@ function snapToMask(midi, mask) {
    about its own voice-range setting), and this fills in whenever it doesn't - which is what left the
    readout saying 'Listening…' forever for lower voices. */
 let pitchBuf = null, pitchAt = 0, pitchLast = null;
+/* The tuner: a YIN detector over the last ~43 ms of mic, the same method Tune uses, so the note shown
+   and the note tuned agree. The difference curve dips to zero at the period and at every multiple of
+   it; the first dip that is deep enough is the note being sung, which is what stops a low octave from
+   winning. The lag is then interpolated parabolically, so a clean tone reads within a cent. */
 function detectPitch(samples, sr) {
-  let rms = 0; for (let i = 0; i < samples.length; i++) rms += samples[i] * samples[i];
-  rms = Math.sqrt(rms / samples.length);
-  if (rms < 0.004) return null;
-  const minLag = Math.floor(sr / 1000), maxLag = Math.min(Math.floor(sr / 55), Math.floor(samples.length / 2));
-  if (maxLag <= minLag) return null;
-  const corr = new Float32Array(maxLag + 2);
-  let best = -1, bestLag = -1;
-  for (let lag = minLag; lag <= maxLag; lag++) {
-    let s = 0, e1 = 0, e2 = 0;
-    for (let i = 0, n = samples.length - lag; i < n; i++) { const a = samples[i], b = samples[i + lag]; s += a * b; e1 += a * a; e2 += b * b; }
-    const c = s / Math.sqrt(e1 * e2 + 1e-20); corr[lag] = c;
-    if (c > best) { best = c; bestLag = lag; }
+  const n = samples.length;
+  let rms = 0; for (let i = 0; i < n; i++) rms += samples[i] * samples[i];
+  rms = Math.sqrt(rms / n);
+  if (rms < 0.004) return null; // silence or breath: no note to show
+  const minLag = Math.max(2, Math.floor(sr / 1500)), maxLag = Math.min(Math.floor(sr / 45), Math.floor(n / 2));
+  if (maxLag <= minLag + 4) return null;
+  const d = new Float32Array(maxLag + 2), cm = new Float32Array(maxLag + 2);
+  for (let lag = 1; lag <= maxLag; lag++) {
+    let sum = 0; const m = n - lag;
+    for (let i = 0; i < m; i++) { const v = samples[i] - samples[i + lag]; sum += v * v; }
+    d[lag] = sum;
   }
-  if (best < 0.55 || bestLag < 0) return null;
-  for (let lag = minLag + 1; lag < bestLag; lag++) if (corr[lag] > best * 0.9) { bestLag = lag; break; } // an octave down is still periodic: take the lowest
-  const y0 = corr[bestLag - 1] || 0, y1 = corr[bestLag] || 0, y2 = corr[bestLag + 1] || 0;
-  const den = 2 * (2 * y1 - y0 - y2);
-  const lag = bestLag + (Math.abs(den) > 1e-9 ? clamp((y2 - y0) / den, -0.5, 0.5) : 0);
+  let running = 0;
+  for (let lag = 1; lag <= maxLag; lag++) { running += d[lag]; cm[lag] = running > 0 ? d[lag] * lag / running : 1; }
+  let best = -1;
+  for (let lag = minLag; lag < maxLag; lag++) if (cm[lag] < 0.15) { while (lag + 1 < maxLag && cm[lag + 1] < cm[lag]) lag++; best = lag; break; }
+  if (best < 0) { let bv = 1; for (let lag = minLag; lag < maxLag; lag++) if (cm[lag] < bv) { bv = cm[lag]; best = lag; } }
+  if (best <= minLag || best >= maxLag || cm[best] > 0.42) return null; // no usable period here
+  const y0 = cm[best - 1], y1 = cm[best], y2 = cm[best + 1], den = y0 - 2 * y1 + y2;
+  const lag = den > 0 ? best + 0.5 * (y0 - y2) / den : best;
   const f = sr / lag;
-  if (!(f > 50 && f < 1200)) return null;
+  if (!(f > 45 && f < 1600)) return null;
   return { midi: 69 + 12 * Math.log2(f / 440), f };
 }
 function tickPitch() {

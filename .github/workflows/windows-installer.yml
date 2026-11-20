@@ -32,6 +32,10 @@ jobs:
       - run: npm ci
       - run: npm run pack:win
       - run: node tools/smoke-win.mjs
+      # Every screen, every knob, every switch, on the packaged build. This is what
+      # catches a control that stopped doing anything, which the smoke test cannot see.
+      - name: click through every screen
+        run: node tools/check-ui.mjs out/Tapehouse-win32-x64/Tapehouse.exe
       - name: say what broke
         if: failure()
         shell: pwsh
