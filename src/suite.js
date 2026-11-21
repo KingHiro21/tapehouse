@@ -421,7 +421,7 @@ function suiteApplyArtist(P, ins, a) {
 }
 
 /* ---------- presets ---------- */
-let suiteUser = null;
+let suiteUser = null, suitePresetToken = 0;
 async function suiteLoadUser() { if (suiteUser) return suiteUser; try { const r = await Store.get('meta', 'vocal-presets'); suiteUser = (r && Array.isArray(r.value)) ? r.value : []; } catch (e) { suiteUser = []; } return suiteUser; }
 async function suiteSaveUser() { try { await Store.put('meta', { key: 'vocal-presets', value: suiteUser }); } catch (e) { toast('Couldn’t save the preset in this browser.', { kind: 'error' }); } }
 function suitePresetList() {
@@ -429,19 +429,48 @@ function suitePresetList() {
     ...Object.entries(CHAINS).filter(([, c]) => !c.artist).map(([id, c]) => ({ kind: 'chain', id, name: c.label })),
     ...(suiteUser || []).map((u, i) => ({ kind: 'user', id: 'u' + i, name: u.name, fx: u.fx, target: u.target }))];
 }
+function suitePresetFx(ins, p) {
+  if (p.kind === 'artist') {
+    const P = { mixer: { [ins]: { fx: [] } } };
+    suiteApplyArtist(P, ins, SUITE_ARTISTS.find(a => a.id === p.id));
+    return P.mixer[ins].fx;
+  }
+  if (p.kind === 'chain') return CHAINS[p.id].fx.map(([pl, params]) => fxSlot(pl, { ...params }));
+  return (p.fx || []).map(([pl, params]) => fxSlot(pl, { ...params }));
+}
 function suiteLoadPreset(ins, p) {
-  mutate(P => {
-    const m = P.mixer[ins];
-    if (p.kind === 'artist') suiteApplyArtist(P, ins, SUITE_ARTISTS.find(a => a.id === p.id));
-    else if (p.kind === 'chain') m.fx = CHAINS[p.id].fx.map(([pl, params]) => fxSlot(pl, { ...params }));
-    else m.fx = p.fx.map(([pl, params]) => fxSlot(pl, { ...params }));
-    delete m.match; delete m.vsMatch; delete m.matchOff;
-    m.vsPreset = p.name; delete m.vsMod;
-    m.vsTarget = p.kind === 'user' ? (p.target || m.vsTarget || 'clean') : p.id; // who this preset sounds like
-  });
-  suiteApplyProfileTune(ins); // remember the voice range without changing the preset's sound
-  if (engine && usesDsp(project)) engine.loadDsp(); // start the fast engine now, so it is ready before the mic opens
-  suiteAutoMatch(ins);
+  if (!p) return;
+  const fx = suitePresetFx(ins, p), token = ++suitePresetToken;
+  const apply = () => {
+    if (token !== suitePresetToken) return; // a later selection wins while the worklet loads
+    mutate(P => {
+      const m = P.mixer[ins]; m.fx = fx;
+      delete m.match; delete m.vsMatch; delete m.matchOff;
+      m.vsPreset = p.name; delete m.vsMod;
+      m.vsTarget = p.kind === 'user' ? (p.target || m.vsTarget || 'clean') : p.id; // who this preset sounds like
+    });
+    suiteApplyProfileTune(ins); // remember the voice range without changing the preset's sound
+    suiteAutoMatch(ins);
+  };
+  // Load the AudioWorklet BEFORE building the replacement chain. Previously mutate() made
+  // every DSP effect allocate a main-thread ScriptProcessor, and only then started loading
+  // the worklet. A full artist chain can create several fallback processors at once — the
+  // preset change itself spikes the UI thread and sounds like crackle. Keep the old preset
+  // audible until the real-time DSP is ready, then crossfade to the new chain.
+  const needsDsp = fx.some(f => !f.bypass && pluginUsesDsp(f.plugin));
+  if (engine && needsDsp && engine.dsp !== 'ready' && engine.dsp !== 'failed') {
+    if (!ui.vsPresetLoading) toast('Preparing the vocal engine — your current sound stays on until the preset is ready.', { ms: 2200 });
+    ui.vsPresetLoading = p.name;
+    engine.loadDsp().then(() => {
+      if (token !== suitePresetToken) return;
+      ui.vsPresetLoading = '';
+      if (engine.dsp !== 'ready') toast('The fast vocal engine is unavailable; using the compatibility engine.', { kind: 'error', ms: 5000 });
+      apply();
+    });
+    return;
+  }
+  ui.vsPresetLoading = '';
+  apply();
 }
 /* With a take on the track, a new preset is fitted to your voice straight away (a moment after you stop flicking through). */
 function suiteAutoMatch(ins, ms = 700) {
@@ -708,7 +737,8 @@ function renderVocal(v) {
     el('span', { class: 'muted small mono rec-diag' + (engine && engine.dsp === 'failed' ? ' warn' : '') }, `Tapehouse ${APP_VERSION}${STANDALONE ? ' · recording edition' : ''}${eng ? ' · ' + eng : ''}${ctx ? ' · ' + Math.round(ctx.sampleRate / 100) / 10 + ' kHz' : ''}`,
       engine && engine.dsp === 'failed' ? ' · This browser blocked the fast audio engine, so effects run on a backup that can crackle. Use Chrome or Edge and keep this tab in front.' : ''));
   v.append(el('div', { class: 'view-body vs', 'data-scroll': 'vs' }, el('div', { class: 'vs-wrap' }, el('div', { class: 'vs-face' }, el('i', { class: 'vs-screw a' }), el('i', { class: 'vs-screw b' }), el('i', { class: 'vs-screw c' }), el('i', { class: 'vs-screw d' }),
-    head, saving, vsRecord(ins, m), el('div', { class: 'vs-core' }, io('in'), vsStage(ins, m), io('out')), tabs, panel, assistant), foot)));
+    head, saving, vsRecord(ins, m), el('div', { class: 'vs-core' }, io('in'),
+      el('div', { class: 'vs-performance' }, vsStage(ins, m), assistant), io('out')), tabs, panel), foot)));
   const log = $('#vsChat'); if (log) log.scrollTop = log.scrollHeight;
   if (ui.vsKeep) { const kb = $$('.vs .knob').find(x => x.getAttribute('aria-label') === ui.vsKeep); ui.vsKeep = null; if (kb && document.activeElement === document.body) kb.focus({ preventScroll: true }); }
   if (ui.vsFocus) { ui.vsFocus = false; const q = $('.vs-ask input'); if (q) q.focus({ preventScroll: true }); }

@@ -650,6 +650,10 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 .lm-mod:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (max-width:600px){.lm-row{grid-template-columns:1fr}.lm-row span.muted{font-size:12px}}
 
+/* ---------- the performance surface: tuner and voice assistant belong together ---------- */
+.vs-performance{display:flex;flex-direction:column;gap:8px;min-width:0;align-self:stretch;padding:10px;border:1px solid var(--edge);border-radius:13px;background:linear-gradient(160deg,var(--slot),var(--slot-2));box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
+.vs-performance .vs-stage{flex:1;border-color:var(--edge-2);box-shadow:inset 0 1px 8px rgba(0,0,0,.22)}
+.vs-performance .vs-asst{flex:none;border-color:var(--edge-2)}
 /* ---------- the stage: what you watch while singing ---------- */
 .vs-stage{display:flex;flex-direction:column;gap:8px;min-width:0;justify-content:center;align-items:center;padding:10px 12px;border-radius:12px;background:var(--slot-2);border:1px solid var(--edge)}
 .vs-stage .vs-note{padding:8px 16px 6px;width:100%;max-width:520px;gap:4px}
@@ -710,6 +714,9 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 .vs-save{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px;border-radius:10px;background:var(--slot-2);border:1px solid var(--edge)}
 .vs-save input{flex:1;min-width:160px;min-height:32px;border-radius:8px;border:1px solid var(--edge-2);background:var(--well);color:var(--text);padding:0 10px;font:500 13px var(--font-ui);color-scheme:dark}
 .vs-core{display:grid;grid-template-columns:118px minmax(0,1fr) 118px;gap:14px;align-items:stretch}
+.vs-core>.vs-performance{grid-column:2;grid-row:1}
+.vs-core>.vs-io:first-child{grid-column:1;grid-row:1}
+.vs-core>.vs-io:last-child{grid-column:3;grid-row:1}
 .vs-io{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:10px 6px;border-radius:12px;background:var(--slot-2);border:1px solid var(--edge)}
 .vs-io .kl{display:none}
 .vs-meter{display:flex;flex-direction:column-reverse;gap:2px;width:16px;padding:3px;border-radius:5px;background:#0a0b0e;box-shadow:inset 0 1px 3px rgba(0,0,0,.8),0 0 0 1px var(--edge)}
@@ -806,6 +813,9 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
   .vs{padding:10px}
   .vs-face{padding:14px 12px 14px;border-radius:14px}
   .vs-core{grid-template-columns:1fr 1fr;gap:10px}
+  .vs-core>.vs-performance{grid-column:1/-1;grid-row:2}
+  .vs-core>.vs-io:first-child{grid-column:1;grid-row:1}
+  .vs-core>.vs-io:last-child{grid-column:2;grid-row:1}
   .vs-crt{grid-column:1/-1;order:-1}
   .vs-io{flex-direction:row;justify-content:center}
   .vs-tune{grid-template-columns:1fr}

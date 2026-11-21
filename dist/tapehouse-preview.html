@@ -768,6 +768,10 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 .lm-mod:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (max-width:600px){.lm-row{grid-template-columns:1fr}.lm-row span.muted{font-size:12px}}
 
+/* ---------- the performance surface: tuner and voice assistant belong together ---------- */
+.vs-performance{display:flex;flex-direction:column;gap:8px;min-width:0;align-self:stretch;padding:10px;border:1px solid var(--edge);border-radius:13px;background:linear-gradient(160deg,var(--slot),var(--slot-2));box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
+.vs-performance .vs-stage{flex:1;border-color:var(--edge-2);box-shadow:inset 0 1px 8px rgba(0,0,0,.22)}
+.vs-performance .vs-asst{flex:none;border-color:var(--edge-2)}
 /* ---------- the stage: what you watch while singing ---------- */
 .vs-stage{display:flex;flex-direction:column;gap:8px;min-width:0;justify-content:center;align-items:center;padding:10px 12px;border-radius:12px;background:var(--slot-2);border:1px solid var(--edge)}
 .vs-stage .vs-note{padding:8px 16px 6px;width:100%;max-width:520px;gap:4px}
@@ -828,6 +832,9 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 .vs-save{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px;border-radius:10px;background:var(--slot-2);border:1px solid var(--edge)}
 .vs-save input{flex:1;min-width:160px;min-height:32px;border-radius:8px;border:1px solid var(--edge-2);background:var(--well);color:var(--text);padding:0 10px;font:500 13px var(--font-ui);color-scheme:dark}
 .vs-core{display:grid;grid-template-columns:118px minmax(0,1fr) 118px;gap:14px;align-items:stretch}
+.vs-core>.vs-performance{grid-column:2;grid-row:1}
+.vs-core>.vs-io:first-child{grid-column:1;grid-row:1}
+.vs-core>.vs-io:last-child{grid-column:3;grid-row:1}
 .vs-io{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:10px 6px;border-radius:12px;background:var(--slot-2);border:1px solid var(--edge)}
 .vs-io .kl{display:none}
 .vs-meter{display:flex;flex-direction:column-reverse;gap:2px;width:16px;padding:3px;border-radius:5px;background:#0a0b0e;box-shadow:inset 0 1px 3px rgba(0,0,0,.8),0 0 0 1px var(--edge)}
@@ -924,6 +931,9 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
   .vs{padding:10px}
   .vs-face{padding:14px 12px 14px;border-radius:14px}
   .vs-core{grid-template-columns:1fr 1fr;gap:10px}
+  .vs-core>.vs-performance{grid-column:1/-1;grid-row:2}
+  .vs-core>.vs-io:first-child{grid-column:1;grid-row:1}
+  .vs-core>.vs-io:last-child{grid-column:2;grid-row:1}
   .vs-crt{grid-column:1/-1;order:-1}
   .vs-io{flex-direction:row;justify-content:center}
   .vs-tune{grid-template-columns:1fr}
@@ -1924,8 +1934,11 @@ class Engine {
   makeInsert() {
     const ac = this.ac, input = ac.createGain(), vol = ac.createGain(), pan = ac.createStereoPanner(), meter = ac.createAnalyser(), out = ac.createGain(), pre = ac.createAnalyser();
     meter.fftSize = 512; pre.fftSize = 512; vol.connect(pan); pan.connect(meter); meter.connect(out); input.connect(pre);
-    return { input, vol, pan, meter, out, pre, fx: [], sig: null, data: new Float32Array(512), level: 0,
-      dispose() { this.fx.forEach(f => f.dispose()); disc(input, vol, pan, meter, out, pre); } };
+    return { input, vol, pan, meter, out, pre, fx: [], paths: [], sig: null, data: new Float32Array(512), level: 0,
+      dispose() {
+        for (const p of this.paths) { clearTimeout(p.timer); p.fx.forEach(f => f.dispose()); p.links.forEach(([a, b]) => { try { a.disconnect(b); } catch (e) { /* already disconnected */ } }); disc(p.gain); }
+        this.paths.length = 0; disc(input, vol, pan, meter, out, pre);
+      } };
   }
   sync() {
     const P = this.P(), ac = this.ac;
@@ -1960,41 +1973,40 @@ class Engine {
     if (ks !== this.keySig) { const first = !this.keySig; this.keySig = ks; if (!first) this.refreshTempo(); }
   }
   rebuildFx(i, sig) {
-    const ins = this.inserts[i], m = this.P().mixer[i];
-    disc(ins.input); if (ins.pre) ins.input.connect(ins.pre);
-    /* Keep the effects that survive the change. A knob that turns a module on, a bypass toggle or even a preset
-       switch used to dispose and rebuild the whole chain, which clicked and dropped out while playing. Now running
-       effects are reconnected in place (their internal state — Tune's grains, reverb tails — keeps running) and
-       only the effects that are really gone are torn down. */
-    const old = ins.fx, keep = new Map(); old.forEach(f => { if (f.input) keep.set(f.id, f); });
-    const links = []; let prevOut = ins.input; // sever exactly the old chain links before building the new one:
-    for (const f of old) if (f.input) { links.push([prevOut, f.input]); prevOut = f.output; } // a reused pair whose
-    for (const [a, b] of links) { try { a.disconnect(b); } catch (e) { /* already gone */ } } // neighbours changed
-    ins.fx = [];
-    let node = ins.input;
+    const ins = this.inserts[i], m = this.P().mixer[i], ac = this.ac;
+    if (ins.pre) { try { ins.input.connect(ins.pre); } catch (e) { /* pre is already fed */ } }
+    /* Build the replacement chain alongside the current one, then crossfade their outputs. Tearing a live
+       WebAudio chain out and reconnecting it in one task creates a discontinuity (heard as a crack/pop),
+       especially when an artist preset replaces several effects at once. Keep old nodes alive for the fade. */
+    const links = []; let node = ins.input; const fx = [];
     for (const f of m.fx) {
       const pl = plugins.get(f.plugin); let inst = null;
       if (pl && !f.bypass && pl.manifest.type === 'effect') {
-        const oldInst = keep.get(f.id);
-        if (oldInst && oldInst.pluginId === f.plugin && !(oldInst.dspFallback && oldInst.dspFallback() && this.dsp === 'ready')) {
-          // a fallback (main-thread) effect never reuses: while the vocal DSP worklet was still loading it was
-          // built on a ScriptProcessor, which crackles the moment the UI does anything. Once the worklet is
-          // ready the effect must be rebuilt onto it — that upgrade is the whole point of the rebuild.
-          inst = oldInst;
-          try {
-            const vals = effectiveParams(pl.manifest, f.params);
-            for (const k in vals) inst.set(k, vals[k]); // settings may have moved on since it was built
-          } catch (e) { /* never let a settings push kill the chain */ }
-        } else {
-          try { inst = createEffect(this, pl, f.params); inst.pluginId = f.plugin; this.failed.delete(f.plugin); }
-          catch (e) { if (!pl.manifest.script || this.loaded.has(pl.id)) this.failed.set(f.plugin, e.message); }
-        }
+        try { inst = createEffect(this, pl, f.params); inst.pluginId = f.plugin; this.failed.delete(f.plugin); }
+        catch (e) { if (!pl.manifest.script || this.loaded.has(pl.id)) this.failed.set(f.plugin, e.message); }
       }
-      if (!inst) { ins.fx.push({ id: f.id, set() {}, refresh() {}, dispose() {} }); continue; } // bypassed or failed: it sits in the list but carries no nodes
-      inst.id = f.id; node.connect(inst.input); node = inst.output; ins.fx.push(inst);
+      if (!inst) { fx.push({ id: f.id, set() {}, refresh() {}, dispose() {} }); continue; }
+      inst.id = f.id; links.push([node, inst.input]); node.connect(inst.input); node = inst.output; fx.push(inst);
     }
-    for (const f of old) if (f.input && !ins.fx.includes(f)) f.dispose();
-    node.connect(ins.vol); ins.sig = sig;
+    const gain = ac.createGain(), oldPaths = ins.paths.slice(), now = ac.currentTime;
+    // Keep insert.input -> pre analyzer connected; only retire effect-chain links.
+    const fade = 0.035;
+    for (const p of oldPaths) {
+      holdParam(p.gain.gain, now);
+      p.gain.gain.linearRampToValueAtTime(0, now + fade);
+      p.retiring = true;
+      clearTimeout(p.timer);
+      p.timer = setTimeout(() => {
+        p.fx.forEach(f => { try { f.dispose(); } catch (e) { /* best effort */ } });
+        p.links.forEach(([a, b]) => { try { a.disconnect(b); } catch (e) { /* already disconnected */ } });
+        disc(p.gain); const at = ins.paths.indexOf(p); if (at >= 0) ins.paths.splice(at, 1);
+      }, Math.ceil(fade * 1000) + 25);
+    }
+    if (!oldPaths.length) gain.gain.value = 1;
+    else { gain.gain.value = 0; gain.gain.setValueAtTime(0, now); gain.gain.linearRampToValueAtTime(1, now + fade); }
+    node.connect(gain); gain.connect(ins.vol);
+    const path = { fx, links, gain, timer: null, retiring: false };
+    ins.paths.push(path); ins.fx = fx; ins.sig = sig;
     Object.defineProperty(ins, 'latency', { configurable: true, get() { return this.fx.reduce((a, f) => a + (f.latency || 0), 0); } });
   }
   setFxParam(i, fxId, pid, v) { const f = this.inserts[i] && this.inserts[i].fx.find(x => x.id === fxId); if (f) f.set(pid, v); }
@@ -7690,7 +7702,7 @@ function suiteApplyArtist(P, ins, a) {
 }
 
 /* ---------- presets ---------- */
-let suiteUser = null;
+let suiteUser = null, suitePresetToken = 0;
 async function suiteLoadUser() { if (suiteUser) return suiteUser; try { const r = await Store.get('meta', 'vocal-presets'); suiteUser = (r && Array.isArray(r.value)) ? r.value : []; } catch (e) { suiteUser = []; } return suiteUser; }
 async function suiteSaveUser() { try { await Store.put('meta', { key: 'vocal-presets', value: suiteUser }); } catch (e) { toast('Couldn’t save the preset in this browser.', { kind: 'error' }); } }
 function suitePresetList() {
@@ -7698,19 +7710,48 @@ function suitePresetList() {
     ...Object.entries(CHAINS).filter(([, c]) => !c.artist).map(([id, c]) => ({ kind: 'chain', id, name: c.label })),
     ...(suiteUser || []).map((u, i) => ({ kind: 'user', id: 'u' + i, name: u.name, fx: u.fx, target: u.target }))];
 }
+function suitePresetFx(ins, p) {
+  if (p.kind === 'artist') {
+    const P = { mixer: { [ins]: { fx: [] } } };
+    suiteApplyArtist(P, ins, SUITE_ARTISTS.find(a => a.id === p.id));
+    return P.mixer[ins].fx;
+  }
+  if (p.kind === 'chain') return CHAINS[p.id].fx.map(([pl, params]) => fxSlot(pl, { ...params }));
+  return (p.fx || []).map(([pl, params]) => fxSlot(pl, { ...params }));
+}
 function suiteLoadPreset(ins, p) {
-  mutate(P => {
-    const m = P.mixer[ins];
-    if (p.kind === 'artist') suiteApplyArtist(P, ins, SUITE_ARTISTS.find(a => a.id === p.id));
-    else if (p.kind === 'chain') m.fx = CHAINS[p.id].fx.map(([pl, params]) => fxSlot(pl, { ...params }));
-    else m.fx = p.fx.map(([pl, params]) => fxSlot(pl, { ...params }));
-    delete m.match; delete m.vsMatch; delete m.matchOff;
-    m.vsPreset = p.name; delete m.vsMod;
-    m.vsTarget = p.kind === 'user' ? (p.target || m.vsTarget || 'clean') : p.id; // who this preset sounds like
-  });
-  suiteApplyProfileTune(ins); // remember the voice range without changing the preset's sound
-  if (engine && usesDsp(project)) engine.loadDsp(); // start the fast engine now, so it is ready before the mic opens
-  suiteAutoMatch(ins);
+  if (!p) return;
+  const fx = suitePresetFx(ins, p), token = ++suitePresetToken;
+  const apply = () => {
+    if (token !== suitePresetToken) return; // a later selection wins while the worklet loads
+    mutate(P => {
+      const m = P.mixer[ins]; m.fx = fx;
+      delete m.match; delete m.vsMatch; delete m.matchOff;
+      m.vsPreset = p.name; delete m.vsMod;
+      m.vsTarget = p.kind === 'user' ? (p.target || m.vsTarget || 'clean') : p.id; // who this preset sounds like
+    });
+    suiteApplyProfileTune(ins); // remember the voice range without changing the preset's sound
+    suiteAutoMatch(ins);
+  };
+  // Load the AudioWorklet BEFORE building the replacement chain. Previously mutate() made
+  // every DSP effect allocate a main-thread ScriptProcessor, and only then started loading
+  // the worklet. A full artist chain can create several fallback processors at once — the
+  // preset change itself spikes the UI thread and sounds like crackle. Keep the old preset
+  // audible until the real-time DSP is ready, then crossfade to the new chain.
+  const needsDsp = fx.some(f => !f.bypass && pluginUsesDsp(f.plugin));
+  if (engine && needsDsp && engine.dsp !== 'ready' && engine.dsp !== 'failed') {
+    if (!ui.vsPresetLoading) toast('Preparing the vocal engine — your current sound stays on until the preset is ready.', { ms: 2200 });
+    ui.vsPresetLoading = p.name;
+    engine.loadDsp().then(() => {
+      if (token !== suitePresetToken) return;
+      ui.vsPresetLoading = '';
+      if (engine.dsp !== 'ready') toast('The fast vocal engine is unavailable; using the compatibility engine.', { kind: 'error', ms: 5000 });
+      apply();
+    });
+    return;
+  }
+  ui.vsPresetLoading = '';
+  apply();
 }
 /* With a take on the track, a new preset is fitted to your voice straight away (a moment after you stop flicking through). */
 function suiteAutoMatch(ins, ms = 700) {
@@ -7977,7 +8018,8 @@ function renderVocal(v) {
     el('span', { class: 'muted small mono rec-diag' + (engine && engine.dsp === 'failed' ? ' warn' : '') }, `Tapehouse ${APP_VERSION}${STANDALONE ? ' · recording edition' : ''}${eng ? ' · ' + eng : ''}${ctx ? ' · ' + Math.round(ctx.sampleRate / 100) / 10 + ' kHz' : ''}`,
       engine && engine.dsp === 'failed' ? ' · This browser blocked the fast audio engine, so effects run on a backup that can crackle. Use Chrome or Edge and keep this tab in front.' : ''));
   v.append(el('div', { class: 'view-body vs', 'data-scroll': 'vs' }, el('div', { class: 'vs-wrap' }, el('div', { class: 'vs-face' }, el('i', { class: 'vs-screw a' }), el('i', { class: 'vs-screw b' }), el('i', { class: 'vs-screw c' }), el('i', { class: 'vs-screw d' }),
-    head, saving, vsRecord(ins, m), el('div', { class: 'vs-core' }, io('in'), vsStage(ins, m), io('out')), tabs, panel, assistant), foot)));
+    head, saving, vsRecord(ins, m), el('div', { class: 'vs-core' }, io('in'),
+      el('div', { class: 'vs-performance' }, vsStage(ins, m), assistant), io('out')), tabs, panel), foot)));
   const log = $('#vsChat'); if (log) log.scrollTop = log.scrollHeight;
   if (ui.vsKeep) { const kb = $$('.vs .knob').find(x => x.getAttribute('aria-label') === ui.vsKeep); ui.vsKeep = null; if (kb && document.activeElement === document.body) kb.focus({ preventScroll: true }); }
   if (ui.vsFocus) { ui.vsFocus = false; const q = $('.vs-ask input'); if (q) q.focus({ preventScroll: true }); }

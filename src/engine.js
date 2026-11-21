@@ -755,8 +755,11 @@ class Engine {
   makeInsert() {
     const ac = this.ac, input = ac.createGain(), vol = ac.createGain(), pan = ac.createStereoPanner(), meter = ac.createAnalyser(), out = ac.createGain(), pre = ac.createAnalyser();
     meter.fftSize = 512; pre.fftSize = 512; vol.connect(pan); pan.connect(meter); meter.connect(out); input.connect(pre);
-    return { input, vol, pan, meter, out, pre, fx: [], sig: null, data: new Float32Array(512), level: 0,
-      dispose() { this.fx.forEach(f => f.dispose()); disc(input, vol, pan, meter, out, pre); } };
+    return { input, vol, pan, meter, out, pre, fx: [], paths: [], sig: null, data: new Float32Array(512), level: 0,
+      dispose() {
+        for (const p of this.paths) { clearTimeout(p.timer); p.fx.forEach(f => f.dispose()); p.links.forEach(([a, b]) => { try { a.disconnect(b); } catch (e) { /* already disconnected */ } }); disc(p.gain); }
+        this.paths.length = 0; disc(input, vol, pan, meter, out, pre);
+      } };
   }
   sync() {
     const P = this.P(), ac = this.ac;
@@ -791,41 +794,40 @@ class Engine {
     if (ks !== this.keySig) { const first = !this.keySig; this.keySig = ks; if (!first) this.refreshTempo(); }
   }
   rebuildFx(i, sig) {
-    const ins = this.inserts[i], m = this.P().mixer[i];
-    disc(ins.input); if (ins.pre) ins.input.connect(ins.pre);
-    /* Keep the effects that survive the change. A knob that turns a module on, a bypass toggle or even a preset
-       switch used to dispose and rebuild the whole chain, which clicked and dropped out while playing. Now running
-       effects are reconnected in place (their internal state — Tune's grains, reverb tails — keeps running) and
-       only the effects that are really gone are torn down. */
-    const old = ins.fx, keep = new Map(); old.forEach(f => { if (f.input) keep.set(f.id, f); });
-    const links = []; let prevOut = ins.input; // sever exactly the old chain links before building the new one:
-    for (const f of old) if (f.input) { links.push([prevOut, f.input]); prevOut = f.output; } // a reused pair whose
-    for (const [a, b] of links) { try { a.disconnect(b); } catch (e) { /* already gone */ } } // neighbours changed
-    ins.fx = [];
-    let node = ins.input;
+    const ins = this.inserts[i], m = this.P().mixer[i], ac = this.ac;
+    if (ins.pre) { try { ins.input.connect(ins.pre); } catch (e) { /* pre is already fed */ } }
+    /* Build the replacement chain alongside the current one, then crossfade their outputs. Tearing a live
+       WebAudio chain out and reconnecting it in one task creates a discontinuity (heard as a crack/pop),
+       especially when an artist preset replaces several effects at once. Keep old nodes alive for the fade. */
+    const links = []; let node = ins.input; const fx = [];
     for (const f of m.fx) {
       const pl = plugins.get(f.plugin); let inst = null;
       if (pl && !f.bypass && pl.manifest.type === 'effect') {
-        const oldInst = keep.get(f.id);
-        if (oldInst && oldInst.pluginId === f.plugin && !(oldInst.dspFallback && oldInst.dspFallback() && this.dsp === 'ready')) {
-          // a fallback (main-thread) effect never reuses: while the vocal DSP worklet was still loading it was
-          // built on a ScriptProcessor, which crackles the moment the UI does anything. Once the worklet is
-          // ready the effect must be rebuilt onto it — that upgrade is the whole point of the rebuild.
-          inst = oldInst;
-          try {
-            const vals = effectiveParams(pl.manifest, f.params);
-            for (const k in vals) inst.set(k, vals[k]); // settings may have moved on since it was built
-          } catch (e) { /* never let a settings push kill the chain */ }
-        } else {
-          try { inst = createEffect(this, pl, f.params); inst.pluginId = f.plugin; this.failed.delete(f.plugin); }
-          catch (e) { if (!pl.manifest.script || this.loaded.has(pl.id)) this.failed.set(f.plugin, e.message); }
-        }
+        try { inst = createEffect(this, pl, f.params); inst.pluginId = f.plugin; this.failed.delete(f.plugin); }
+        catch (e) { if (!pl.manifest.script || this.loaded.has(pl.id)) this.failed.set(f.plugin, e.message); }
       }
-      if (!inst) { ins.fx.push({ id: f.id, set() {}, refresh() {}, dispose() {} }); continue; } // bypassed or failed: it sits in the list but carries no nodes
-      inst.id = f.id; node.connect(inst.input); node = inst.output; ins.fx.push(inst);
+      if (!inst) { fx.push({ id: f.id, set() {}, refresh() {}, dispose() {} }); continue; }
+      inst.id = f.id; links.push([node, inst.input]); node.connect(inst.input); node = inst.output; fx.push(inst);
     }
-    for (const f of old) if (f.input && !ins.fx.includes(f)) f.dispose();
-    node.connect(ins.vol); ins.sig = sig;
+    const gain = ac.createGain(), oldPaths = ins.paths.slice(), now = ac.currentTime;
+    // Keep insert.input -> pre analyzer connected; only retire effect-chain links.
+    const fade = 0.035;
+    for (const p of oldPaths) {
+      holdParam(p.gain.gain, now);
+      p.gain.gain.linearRampToValueAtTime(0, now + fade);
+      p.retiring = true;
+      clearTimeout(p.timer);
+      p.timer = setTimeout(() => {
+        p.fx.forEach(f => { try { f.dispose(); } catch (e) { /* best effort */ } });
+        p.links.forEach(([a, b]) => { try { a.disconnect(b); } catch (e) { /* already disconnected */ } });
+        disc(p.gain); const at = ins.paths.indexOf(p); if (at >= 0) ins.paths.splice(at, 1);
+      }, Math.ceil(fade * 1000) + 25);
+    }
+    if (!oldPaths.length) gain.gain.value = 1;
+    else { gain.gain.value = 0; gain.gain.setValueAtTime(0, now); gain.gain.linearRampToValueAtTime(1, now + fade); }
+    node.connect(gain); gain.connect(ins.vol);
+    const path = { fx, links, gain, timer: null, retiring: false };
+    ins.paths.push(path); ins.fx = fx; ins.sig = sig;
     Object.defineProperty(ins, 'latency', { configurable: true, get() { return this.fx.reduce((a, f) => a + (f.latency || 0), 0); } });
   }
   setFxParam(i, fxId, pid, v) { const f = this.inserts[i] && this.inserts[i].fx.find(x => x.id === fxId); if (f) f.set(pid, v); }

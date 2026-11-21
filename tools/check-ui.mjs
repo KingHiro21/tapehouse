@@ -396,10 +396,45 @@ await step('the bypass switch turns the whole chain off and back on', async () =
 await step('the preset arrows and the picker change the sound', async () => {
   const before = await page.eval('JSON.stringify(project.mixer[ui.vsIns].fx.map(f => [f.plugin, f.params.retune, f.params.time, f.params.mix]))');
   await page.eval(`[...document.querySelectorAll('.vs-key')].find(b => b.getAttribute('aria-label') === 'Next preset').click()`);
-  await sleep(600);
+  await sleep(1100);
   const after = await page.eval('JSON.stringify(project.mixer[ui.vsIns].fx.map(f => [f.plugin, f.params.retune, f.params.time, f.params.mix]))');
   expect(before !== after, 'the next preset changed nothing');
 });
+await step('preset changes crossfade without tearing down the old path', async () => {
+  const result = await page.eval(`(() => {
+    const ins = engine.inserts[ui.vsIns], before = ins.paths.length;
+    const old = ins.paths[0]?.gain.gain.value;
+    suiteLoadPreset(ui.vsIns, suitePresetList().find(x => x.kind === 'artist' && x.id === 'drake'));
+    return { before, mid: ins.paths.length, retiring: ins.paths.some(x => x.retiring), old };
+  })()`);
+  expect(result.mid >= 2, `old chain removed instead of crossfaded: ${JSON.stringify(result)}`);
+  expect(!result.retiring || Number.isFinite(result.old), 'old audio path is not fading out');
+  await sleep(120);
+  const after = await page.eval(`(() => { const p=engine.inserts[ui.vsIns].paths; return {count:p.length, retiring:p.some(x=>x.retiring)}; })()`);
+  expect(after.count === 1 && !after.retiring, `old path did not clean up: ${JSON.stringify(after)}`);
+});
+await step('preset output remains connected to the master', async () => {
+  const result = await page.eval(`(() => { const ins=engine.inserts[ui.vsIns]; return {paths:ins.paths.length, fx:ins.fx.length, dsp:engine.dsp}; })()`);
+  expect(result.paths === 1, `effect path count is ${result.paths}`);
+  expect(result.fx > 3, `preset effects missing: ${result.fx}`);
+});
+await step('rapid preset changes leave no fallback effects or orphan paths', async () => {
+  const result = await page.eval(`(() => {
+    const list=suitePresetList().filter(x=>x.kind==='artist'), ins=engine.inserts[ui.vsIns];
+    for(let i=0;i<6;i++) suiteLoadPreset(ui.vsIns,list[(i+4)%list.length]);
+    return {dsp:engine.dsp,loading:ui.vsPresetLoading||'', count:ins.paths.length, fallback:ins.fx.filter(f=>f.dspFallback&&f.dspFallback()).length};
+  })()`);
+  await sleep(900);
+  const settled = await page.eval(`(() => { const ins=engine.inserts[ui.vsIns]; return {dsp:engine.dsp, loading:ui.vsPresetLoading||'',count:ins.paths.length,fallback:ins.fx.filter(f=>f.dspFallback&&f.dspFallback()).length,fx:ins.fx.length}; })()`);
+  expect(settled.dsp === 'ready', `DSP did not finish loading: ${settled.dsp}`);
+  expect(!settled.loading, `preset stayed pending: ${settled.loading}`);
+  expect(settled.count===1 && settled.fallback===0 && settled.fx>3, `unstable chain: ${JSON.stringify(settled)}`);
+});
+await step('tuner and voice assistant share the performance panel', async () => {
+  const pair = await page.eval(`(() => { const p=document.querySelector('.vs-performance'); return !!p && !!p.querySelector('.vs-stage') && !!p.querySelector('.vs-asst') && p.parentElement.classList.contains('vs-core'); })()`);
+  expect(pair, 'the stage and assistant are not together in the vocal console');
+});
+
 await step('the tune feel buttons are wired to the Tune effect', async () => {
   await page.eval(`[...document.querySelectorAll('.vs-tab')].find(b => b.textContent.trim().toUpperCase() === 'TUNE').click()`);
   await sleep(400);
