@@ -160,6 +160,40 @@ try {
     verify('zero Tune depth preserves the delayed original', peak < 1e-6, `peak error ${peak}`);
   }
 
+  /* A singer already on pitch should not be re-synthesized. Tune previously sent even
+     exact in-key notes through TD-PSOLA, which changed timbre without correcting pitch. */
+  {
+    const hz = 440, core = new TuneCore(SR, { ...base, mask: 0xFFF, retune: 60, humanize: 0.45, flex: 0.2, amount: 1 });
+    const input = new Float32Array(128), output = new Float32Array(128), all = new Float32Array(SR), heard = new Float32Array(SR);
+    let phase = 0;
+    for (let at = 0; at < all.length; at += input.length) {
+      for (let i = 0; i < input.length; i++) { phase += 2 * Math.PI * hz / SR; input[i] = 0.18 * (Math.sin(phase) + 0.38 * Math.sin(2 * phase + 0.13) + 0.18 * Math.sin(3 * phase + 0.24)); all[at + i] = input[i]; }
+      core.process(input, output, input.length); heard.set(output, at);
+    }
+    let peak = 0;
+    for (let i = core.L; i < heard.length; i++) peak = Math.max(peak, Math.abs(heard[i] - all[i - core.L]));
+    verify('an in-tune note stays sample-identical', peak < 1e-6 && core.dryMix > 0.999,
+      `peak difference ${peak}, dry mix ${core.dryMix}`);
+  }
+
+  /* A note that is actually off pitch must still be corrected to the allowed pitch. */
+  {
+    const hz = 220 * Math.pow(2, 35 / 1200), core = new TuneCore(SR, { ...base, mask: 0xFFF, retune: 0, humanize: 0, flex: 0 });
+    const input = new Float32Array(128), output = new Float32Array(128), heard = new Float32Array(SR * 1.2);
+    let phase = 0;
+    for (let at = 0; at < heard.length; at += input.length) {
+      for (let i = 0; i < input.length; i++) { phase += 2 * Math.PI * hz / SR; input[i] = 0.18 * (Math.sin(phase) + 0.38 * Math.sin(2 * phase + 0.13) + 0.18 * Math.sin(3 * phase + 0.24)); }
+      core.process(input, output, input.length); heard.set(output, at);
+    }
+    const tail = heard.subarray(heard.length - 9600), amp = f => {
+      let re = 0, im = 0;
+      for (let i = 0; i < tail.length; i++) { const a = 2 * Math.PI * f * i / SR; re += tail[i] * Math.cos(a); im -= tail[i] * Math.sin(a); }
+      return 2 * Math.hypot(re, im) / tail.length;
+    };
+    verify('an off-pitch note still reaches its target', core.report().t === 57 && amp(220) > amp(hz) * 4,
+      `target ${core.report().t}, A3 ${amp(220).toFixed(4)}, input ${amp(hz).toFixed(4)}`);
+  }
+
   /* When breath/noise is unvoiced, it should pass through without grain artifacts. */
   {
     const core = new TuneCore(SR, { ...base, retune: 40, humanize: 0.3 });

@@ -1186,7 +1186,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.7.3';
+const APP_VERSION = '2.7.4';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -2567,10 +2567,13 @@ class TuneCore {
     while (this.sNext <= eEnd + this.maxHalf) this.grain();
     // level match: grains pulled away from their pitch overlap partly out of phase and lose a little level
     const out = this.out, ws = this.wsum, a = this.agcA; let g = this.gain, dry = this.dryMix;
-    // Grain synthesis is unnecessary for breaths and consonants, and processing them can
-    // add metallic texture. Zero depth with a neutral formant must also be transparent.
-    // Crossfade to the latency-aligned input; never mix an undelayed copy into the output.
-    const dryTarget = (!this.voiced || (+this.p.amount <= 0 && Math.abs(+this.p.formant || 0) < 1e-6)) ? 1 : 0;
+    // Grain synthesis is unnecessary for breaths and consonants, and can color even an
+    // already-in-tune voice. Keep those regions completely transparent; only engage grains
+    // when there is a meaningful correction or intentional formant shift. The source copy is
+    // latency-aligned, so crossfading never creates comb filtering from a parallel dry signal.
+    const correction = this.s * Math.max(0, Math.min(1, +this.p.amount));
+    const needsFormant = Math.abs(+this.p.formant || 0) >= 1e-6;
+    const dryTarget = !this.voiced || (!needsFormant && Math.abs(correction) < 0.03) ? 1 : 0;
     const fade = 1 - Math.exp(-1 / (0.008 * this.sr));
     for (let i = 0; i < len; i++) {
       // divide by the exact sum of the overlapping windows: no level ripple however far apart the grains land (deep voices too)
