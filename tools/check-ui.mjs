@@ -495,6 +495,15 @@ await step('Tune runs on the audio thread with the song key', async () => {
   expect(info.latency >= 0 && info.latency < 60, `the chain reports ${info.latency} ms`);
 });
 
+await step('noisy recordings prompt manual cleanup instead of auto-cleanup', async () => {
+  const result = await page.eval(`(() => {
+    const p = suiteMatchCleanupTips({ noiseDb: -54, activeDb: -31, wetDb: -24 });
+    return { count:p.length, text:p[0]||'', defs:JSON.stringify({nc:SUITE_DEF.nc[1].amount,deecho:SUITE_DEF.deecho[1].amount,gate:SUITE_DEF.gate[1].target}) };
+  })()`);
+  expect(result.count === 1 && /left Noise Removal, De-echo and Gate unchanged/.test(result.text), JSON.stringify(result));
+  expect(result.defs === JSON.stringify({nc:0,deecho:0,gate:-80}), `cleanup defaults changed: ${result.defs}`);
+});
+
 await step('voice profiles preserve preset tuning character', async () => {
   const result = await page.eval(`(() => {
     const ins = ui.vsIns, m = project.mixer[ins], oldFx = m.fx, oldProfile = suiteVoiceProfile;

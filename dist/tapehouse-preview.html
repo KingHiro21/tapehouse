@@ -1186,7 +1186,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12
 /* ---------- where we run ----------
    Inside claude.ai the page gets window.claude (downloads, Ask Claude) but no microphone.
    Saved as its own file and opened in Chrome or Edge, it gets the mic and normal downloads. */
-const APP_VERSION = '2.7.4';
+const APP_VERSION = '2.7.5';
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 // Snapshot of the page as written, taken before anything renders, so the claude.ai view can hand out a standalone copy.
 const PAGE_PARTS = (() => {
@@ -8619,6 +8619,14 @@ function suiteMelody(a) {
   const lo = hz(q(0.1)) / Math.pow(2, 1 / 6), hi = hz(q(0.9)) * Math.pow(2, 1 / 6);
   return LM_BANDS.map(f => f >= lo && f <= hi);
 }
+/* Matching should not silently add time-varying cleanup to a live vocal. Spectral subtraction and gating
+   can sound like crackle or cut syllables when their estimate is wrong; keep those user-controlled and
+   give the singer a useful note instead. */
+function suiteMatchCleanupTips(a) {
+  const noisy = a && a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35;
+  const wet = a && a.wetDb != null && a.wetDb > -30;
+  return noisy || wet ? ['Match left Noise Removal, De-echo and Gate unchanged to protect your vocal from breakup. Adjust Cleanup manually if needed.'] : [];
+}
 /* How far a sound is from the target's tone, in dB: smoothed, over the bands your recording has, melody bands counted lightly. */
 const suiteToneErr = (curve, tgCurve, valid = null, mel = null) => { const a = suiteSmooth(lmNorm(curve)), t = suiteSmooth(lmNorm(tgCurve)); let s = 0, c = 0; LM_BANDS.forEach((f, i) => { if (f >= 100 && f <= 12000 && (!valid || valid[i])) { const w = mel && mel[i] && f >= 250 ? 0.3 : 1; s += w * (a[i] - t[i]) ** 2; c += w; } }); return c ? Math.sqrt(s / c) : 0; };
 /* Bands your recording actually has (a phone or an old file can stop at 8 kHz): nothing to match where there's no voice. */
@@ -8648,23 +8656,7 @@ async function suiteMatch(ins, opts = {}) {
     if (vocal) {
       const voice = lmVoiceType(a), tunes = fx.filter(f => f.plugin === 'th.autotune');
       if (tunes.some(f => (f.params.voice || 'tenor') !== voice)) { tunes.forEach(f => { f.params.voice = voice; }); did.push(`Tune set for ${{ low: 'a low voice', tenor: 'a mid-range voice', soprano: 'a high voice' }[voice]}, so it tracks all your notes`); }
-      if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
-        // the room is audible: spectral noise removal beats a gate, which only helps between phrases
-        const want = Math.round(clamp(45 + (30 - (a.activeDb - a.noiseDb)) * 2.5, 45, 85));
-        suiteEnsure(Q, ins, ['nc']); map = suiteClassify(fx); if (map.nc) map.nc.bypass = false;
-        const cur = Math.round(+(map.nc ? map.nc.params.amount : 0) * 100);
-        if (want > cur + 4 && map.nc) { map.nc.params.amount = +(want / 100).toFixed(2); did.push(`Noise removal at ${want}%: your room is ${(a.activeDb - a.noiseDb).toFixed(0)} dB above silence, so hiss and hum come out while you sing`) }
-        else if (!map.gate || map.gate.bypass) did.push('Noise removal already covers the room noise');
-      }
-      if (a.noiseDb != null && a.noiseDb > -62 && a.activeDb - a.noiseDb < 35) {
-        const target = Math.round(clamp(a.noiseDb + 6, -80, -30));
-        if (map.gate) { suiteEnsure(Q, ins, ['gate']); map = suiteClassify(fx); if (map.gate) { if (map.gate.bypass || +map.gate.params.target < target - 3) { map.gate.bypass = false; map.gate.params.target = target; } } }
-      }
-      if (a.wetDb != null && a.wetDb > -30) { // the take carries audible room echo: tighten it before anything else hears it
-        suiteEnsure(Q, ins, ['deecho']); map = suiteClassify(fx); if (map.deecho) map.deecho.bypass = false;
-        const want = Math.round(clamp(30 + (-a.wetDb - 20) * 2.2, 30, 80)), cur = Math.round(+(map.deecho ? map.deecho.params.amount : 0) * 100);
-        if (want > cur + 4 && map.deecho) { map.deecho.params.amount = +(want / 100).toFixed(2); did.push(`De-echo at ${want}%: your room rings on after your lines, so the tail gets pulled down`) }
-      }
+      tips.push(...suiteMatchCleanupTips(a));
       const sx = a.sibRel - tg.sib;
       if (sx > 1.5) { suiteEnsure(Q, ins, ['deess']); map = suiteClassify(fx); const want = clamp(40 + sx * 8, 40, 90), cur = clamp(+map.deess.params.range / 0.12, 0, 100); if (want > cur + 5) { Object.assign(map.deess.params, SUITE_MACROS.deess.set(want, map).deess); map.deess.bypass = false; did.push(`Your S sounds are sharper than ${tg.label}’s, so the de-esser works harder`); } }
       if (map.comp) {
